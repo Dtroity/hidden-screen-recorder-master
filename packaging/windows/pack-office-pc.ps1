@@ -30,31 +30,36 @@ Copy-Item (Join-Path $PSScriptRoot "Start-Agent.bat") $Dist
 Copy-Item (Join-Path $PSScriptRoot "Stop-Agent.bat") $Dist
 Copy-Item (Join-Path $PSScriptRoot "Watch-Agent.bat") $Dist
 Copy-Item (Join-Path $PSScriptRoot "settings.example.json") (Join-Path $Dist "settings.example.json")
+Copy-Item (Join-Path $PSScriptRoot "Test-Archive-Upload.bat") $Dist
+# Starter settings.json (user must paste agent token before Start-Agent).
+if (-not (Test-Path (Join-Path $Dist "settings.json"))) {
+  Copy-Item (Join-Path $PSScriptRoot "settings.example.json") (Join-Path $Dist "settings.json")
+}
 
 @"
 Office Recorder — автономный комплект для офисного ПК
 ====================================================
-Эта папка самодостаточна: копируйте её целиком на ПК (bin\ + BAT + settings).
+Копируйте эту папку целиком. Настройки только здесь: settings.json (не AppData).
 
-  Start-Console.bat   — настройки (архив URL/токен сохраняются сразу)
-  Start-Agent.bat     — запуск агента + автозапуск после перезагрузки + watchdog
-  Stop-Agent.bat      — остановка админом (до следующего Start-Agent)
-  Watch-Agent.bat     — служебный (планировщик)
-  settings.example.json — шаблон: скопируйте в settings.json и подставьте токен
-  settings.json       — создаётся консолью рядом с этими BAT (портативно)
-  bin\
-    hidden-screen-recorder.exe
-    recorder-agent.exe
-    ffmpeg.exe          — HEVC (libx265), обязателен
+  Start-Console.bat        — панель (Архив: URL + токен)
+  Start-Agent.bat          — агент + автозапуск после reboot
+  Stop-Agent.bat           — стоп админом
+  Test-Archive-Upload.bat  — показать журнал/очередь отправки
+  settings.json            — ОБЯЗАТЕЛЬНО вставьте archive_token
+  archive_upload.log       — появится после старта агента (диагностика)
+  bin\ffmpeg.exe           — не удалять
 
-Первый запуск на офисном ПК:
-  1) Скопируйте settings.example.json → settings.json, укажите archive_url и archive_token
-     ИЛИ откройте Start-Console.bat → вкладка «Архив» → URL + токен → «Проверить подключение»
-  2) Start-Agent.bat  (регистрирует автозапуск после reboot)
-  3) После reboot агент должен стартовать сам и дослать неотправленные MP4
+Первый запуск:
+  1) Откройте settings.json → archive_token = токен агента с VPS
+     (sudo -u hsr /opt/hsr/archive-server --config /etc/hsr/server.toml show-agent-token)
+  2) Start-Console.bat → Архив → «Проверить подключение» (должно быть OK)
+  3) Start-Agent.bat
+  4) Подождите ~15 мин (нарезка сегментов) ИЛИ Stop/Start запись —
+     в archive_upload.log должны появиться строки «upload ok»
+  5) На сервере в панели — новые файлы
 
-Кодирование: FFmpeg HEVC. Не удаляйте ffmpeg.exe из bin\.
-Журнал выгрузки: %LOCALAPPDATA%\hidden-screen-recorder\archive_upload.log
+Важно: запись режется каждые 15 минут, иначе один бесконечный файл
+уходит на сервер только после стопа/сна.
 "@ | Set-Content -Path (Join-Path $Dist "README-RU.txt") -Encoding UTF8
 
 $size = (Get-ChildItem $Dist -Recurse -File | Measure-Object Length -Sum).Sum

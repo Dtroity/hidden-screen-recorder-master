@@ -7,6 +7,7 @@ mod setup_wizard;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use axum::{
+    extract::DefaultBodyLimit,
     routing::{delete, get, patch, post},
     Router,
 };
@@ -128,6 +129,10 @@ async fn run(cfg: ServerConfig) -> Result<(), String> {
         sessions,
     };
 
+    // Axum default body limit is 2 MiB — office HEVC segments are tens of MB+.
+    // Without this, large uploads get a TCP reset (client: os error 10054).
+    const UPLOAD_BODY_LIMIT: usize = 4 * 1024 * 1024 * 1024; // 4 GiB
+
     let app = Router::new()
         .route("/", get(routes::index))
         .route("/api/login", post(routes::login))
@@ -141,7 +146,10 @@ async fn run(cfg: ServerConfig) -> Result<(), String> {
         .route("/api/recordings/delete", post(routes::delete_recordings_batch))
         .route("/api/recordings/{id}", delete(routes::delete_recording))
         .route("/api/media/{id}", get(routes::media))
-        .route("/api/upload", post(routes::upload))
+        .route(
+            "/api/upload",
+            post(routes::upload).layer(DefaultBodyLimit::max(UPLOAD_BODY_LIMIT)),
+        )
         .with_state(state);
 
     let addr: SocketAddr = cfg

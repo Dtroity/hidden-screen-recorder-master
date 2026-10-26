@@ -66,13 +66,15 @@ pub fn run() -> Result<(), String> {
     let _power_thread = crate::power::spawn_watcher(power.clone());
 
     debug_log::write(format!(
-        "agent: archive_active={} url={:?}",
+        "agent: archive_active={} duration_min={} url={:?}",
         config.archive_upload_active(),
+        config.duration_minutes,
         config
             .archive_url
             .as_ref()
             .map(|u| u.trim().trim_end_matches('/').to_owned())
     ));
+    crate::archive_upload::startup_probe(&config);
     // Recover orphan *.partial.mp4 from reboot + retry pending uploads.
     if let Err(error) = crate::archive_upload::recover_pending_and_flush(&config) {
         debug_log::write(error.to_string());
@@ -390,25 +392,31 @@ fn handle_recorder_event(
         RecorderEvent::Finished(path) => {
             debug_log::write(format!("agent: recording finished -> {}", path.display()));
             *failure_cooldown_until = None;
-            // Archive HTTP upload first (OfficePC primary path). Share-folder copy
-            // may delete the local file when upload_delete_local is on.
+            // Enqueue immediately, flush in background so the next segment can start
+            // without waiting for a slow WAN upload.
             thread::sleep(Duration::from_millis(400));
-            match crate::archive_upload::enqueue_and_flush(config, &path) {
-                Ok(()) => debug_log::write(format!(
-                    "agent: archive enqueue/flush ok for {}",
-                    path.display()
-                )),
-                Err(error) => debug_log::write(error.to_string()),
+            let cfg = config.clone();
+            let upload_path = path.clone();
+            if let Err(error) = crate::archive_upload::enqueue(&cfg, &upload_path) {
+                debug_log::write(error.to_string());
             }
-            match upload::upload_recording(config, &path) {
-                Ok(Some(result)) => debug_log::write(format!(
-                    "agent: uploaded to {} (deleted_local={})",
-                    result.destination.display(),
-                    result.deleted_local
-                )),
-                Ok(None) => {}
-                Err(error) => debug_log::write(error.to_string()),
-            }
+            thread::Builder::new()
+                .name("archive-upload".into())
+                .spawn(move || {
+                    if let Err(error) = crate::archive_upload::flush_queue(&cfg) {
+                        debug_log::write(error.to_string());
+                    }
+                    match upload::upload_recording(&cfg, &upload_path) {
+                        Ok(Some(result)) => debug_log::write(format!(
+                            "agent: share-upload {} (deleted_local={})",
+                            result.destination.display(),
+                            result.deleted_local
+                        )),
+                        Ok(None) => {}
+                        Err(error) => debug_log::write(error.to_string()),
+                    }
+                })
+                .ok();
             recorder.clear();
             *recorder_events = None;
             *phase = AgentPhase::Idle;

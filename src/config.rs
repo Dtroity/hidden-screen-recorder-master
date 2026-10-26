@@ -251,7 +251,7 @@ impl Default for AppConfig {
             microphone_filter_defaults_version: 1,
             audio_buffer_ms: 250,
             audio_device_timestamps: true,
-            duration_minutes: 0,
+            duration_minutes: 15,
             output_dir,
             filename_template: crate::filename::DEFAULT_TEMPLATE.to_owned(),
             logging_enabled: false,
@@ -273,7 +273,7 @@ impl Default for AppConfig {
             record_on_wake: true,
             agent_autostart: false,
             max_recording_sessions: 1,
-            size_defaults_version: 2,
+            size_defaults_version: 3,
         }
     }
 }
@@ -344,25 +344,53 @@ impl AppConfig {
         (self.archive_upload_enabled || (url_ok && token_ok)) && url_ok && token_ok
     }
 
+    /// True when binaries live in an OfficePC-style `bin\` folder (portable pack).
+    pub fn is_portable_layout() -> bool {
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| {
+                exe.parent().map(|dir| {
+                    dir.file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.eq_ignore_ascii_case("bin"))
+                })
+            })
+            .unwrap_or(false)
+    }
+
+    /// Package root for OfficePC (`…\OfficePC` when exe is `…\OfficePC\bin\*.exe`).
+    pub fn portable_root() -> Option<PathBuf> {
+        let exe = std::env::current_exe().ok()?;
+        let dir = exe.parent()?;
+        if dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.eq_ignore_ascii_case("bin"))
+        {
+            dir.parent().map(|p| p.to_path_buf())
+        } else {
+            Some(dir.to_path_buf())
+        }
+    }
+
     /// Candidate settings locations for a portable OfficePC pack:
-    /// 1) `OfficePC/settings.json` (parent of `bin\`)
-    /// 2) next to the exe
-    /// 3) `%APPDATA%\hidden-screen-recorder\config\settings.json`
-    /// 4) legacy ScreenRecord AppData path
+    /// Under `bin\` → **only** `OfficePC/settings.json` (ignore AppData — avoids split brain).
+    /// Otherwise → exe dir, then AppData / legacy.
     fn candidate_paths() -> Vec<PathBuf> {
         let mut paths = Vec::new();
+        if let Some(root) = Self::portable_root() {
+            paths.push(root.join("settings.json"));
+            if Self::is_portable_layout() {
+                return paths;
+            }
+        }
         if let Ok(exe) = std::env::current_exe()
             && let Some(dir) = exe.parent()
         {
-            if dir
-                .file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.eq_ignore_ascii_case("bin"))
-                && let Some(root) = dir.parent()
-            {
-                paths.push(root.join("settings.json"));
+            let p = dir.join("settings.json");
+            if !paths.iter().any(|x| x == &p) {
+                paths.push(p);
             }
-            paths.push(dir.join("settings.json"));
         }
         if let Some(dirs) = ProjectDirs::from("dev", "", "hidden-screen-recorder") {
             paths.push(dirs.config_dir().join("settings.json"));
@@ -479,6 +507,17 @@ impl AppConfig {
             config.size_defaults_version = 2;
             hevc_defaults_migrated = true;
         }
+        // v3: roll recordings every 15 min so finished MP4s can upload during the workday
+        // (duration 0 = one endless file → upload only on stop/sleep).
+        let mut segment_migrated = false;
+        if config.size_defaults_version < 3 {
+            if config.duration_minutes == 0 {
+                config.duration_minutes = 15;
+                segment_migrated = true;
+            }
+            config.logging_enabled = true;
+            config.size_defaults_version = 3;
+        }
         let mut assigned_device_id = false;
         if config
             .device_id
@@ -528,7 +567,7 @@ impl AppConfig {
         }
         let changed =
             before != serde_json::to_string(&config).map_err(|error| error.to_string())?;
-        if size_migrated || assigned_device_id || hevc_defaults_migrated {
+        if size_migrated || assigned_device_id || hevc_defaults_migrated || segment_migrated {
             let _ = config.save_to(path);
         }
         Ok((
@@ -542,6 +581,11 @@ impl AppConfig {
                 Some(msg!(
                     "Defaults updated: FFmpeg HEVC, Balanced 1080p, audio off. Change in settings if needed.",
                     "Обновлены значения по умолчанию: FFmpeg HEVC, Сбалансированный 1080p, звук выкл. При необходимости измените в настройках."
+                ))
+            } else if segment_migrated {
+                Some(msg!(
+                    "Recordings now split every 15 minutes so files can upload to the archive during the day.",
+                    "Запись нарезается каждые 15 минут, чтобы файлы уходили в архив в течение дня."
                 ))
             } else {
                 changed.then(|| {
@@ -596,8 +640,8 @@ mod tests {
         );
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("settings.json");
-        // Include size_defaults_version=2 so the HEVC product migration does not run in this test.
-        fs::write(&path, r#"{"microphone_noise_suppression":false,"microphone_noise_method":"speex","microphone_volume":0.8,"size_defaults_version":2}"#).unwrap();
+        // Pin size_defaults_version so product migrations do not rewrite this fixture.
+        fs::write(&path, r#"{"microphone_noise_suppression":false,"microphone_noise_method":"speex","microphone_volume":0.8,"size_defaults_version":3}"#).unwrap();
         let (mut config, warning) = AppConfig::load_from(&path).unwrap();
         assert!(warning.is_none());
         assert!(config.microphone_noise_suppression);
@@ -666,7 +710,7 @@ mod tests {
     fn invalid_values_are_corrected_with_a_warning() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("settings.json");
-        fs::write(&path, r#"{"fps":0,"bitrate_mbps":300,"microphone_threshold_db":-100,"duration_minutes":99999,"shortcuts":{"stop":{"key":120,"ctrl":true,"alt":false,"shift":false}},"size_defaults_version":2}"#).unwrap();
+        fs::write(&path, r#"{"fps":0,"bitrate_mbps":300,"microphone_threshold_db":-100,"duration_minutes":99999,"shortcuts":{"stop":{"key":120,"ctrl":true,"alt":false,"shift":false}},"size_defaults_version":3}"#).unwrap();
         let (loaded, warning) = AppConfig::load_from(&path).unwrap();
         assert_eq!(loaded.fps, 1);
         assert_eq!(loaded.bitrate_mbps, 100);
