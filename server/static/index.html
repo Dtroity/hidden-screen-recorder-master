@@ -2,50 +2,81 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Архив записей</title>
   <style>
     :root { color-scheme: light; --bg:#f4f5f7; --card:#fff; --text:#1a1a1a; --muted:#667085; --accent:#2563eb; --line:#e4e7ec; --danger:#b42318; }
     * { box-sizing: border-box; }
-    body { margin:0; font:14px/1.45 system-ui,Segoe UI,sans-serif; background:var(--bg); color:var(--text); }
-    header { background:var(--card); border-bottom:1px solid var(--line); padding:10px 20px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+    body { margin:0; font:14px/1.45 system-ui,Segoe UI,sans-serif; background:var(--bg); color:var(--text); -webkit-tap-highlight-color: transparent; }
+    header { background:var(--card); border-bottom:1px solid var(--line); padding:10px 16px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; position:sticky; top:0; z-index:20; }
     header h1 { font-size:16px; margin:0; font-weight:600; }
     main { display:grid; grid-template-columns: 300px 1fr; gap:16px; padding:16px; max-width:1400px; margin:0 auto; }
-    @media (max-width:900px){ main { grid-template-columns:1fr; } }
     .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px; }
     .muted { color:var(--muted); }
-    input, button, select { font:inherit; padding:7px 10px; border:1px solid var(--line); border-radius:8px; background:#fff; }
+    input, button, select { font:inherit; padding:8px 12px; border:1px solid var(--line); border-radius:8px; background:#fff; min-height:40px; }
     button { cursor:pointer; background:var(--accent); color:#fff; border-color:var(--accent); }
     button.secondary { background:#fff; color:var(--text); border-color:var(--line); }
     button.danger { background:#fff; color:var(--danger); border-color:#fecdca; }
     button.danger:hover { background:#fef3f2; }
     button:disabled { opacity:.45; cursor:not-allowed; }
     ul { list-style:none; margin:0; padding:0; }
-    li.pc { padding:8px; border-radius:8px; display:flex; gap:6px; align-items:flex-start; }
+    li.pc { padding:10px 8px; border-radius:8px; display:flex; gap:8px; align-items:center; }
     li.pc .body { flex:1; cursor:pointer; min-width:0; }
     li.pc:hover, li.pc.active { background:#eef4ff; }
-    li.pc .icon-btn { flex:0 0 auto; width:28px; height:28px; padding:0; display:inline-flex; align-items:center; justify-content:center; background:#fff; color:var(--muted); border:1px solid var(--line); border-radius:6px; font-size:13px; line-height:1; }
+    li.pc .icon-btn { flex:0 0 auto; width:36px; height:36px; padding:0; display:inline-flex; align-items:center; justify-content:center; background:#fff; color:var(--muted); border:1px solid var(--line); border-radius:8px; font-size:14px; line-height:1; }
     li.pc .icon-btn:hover { color:var(--text); border-color:#b0b8c4; }
     li.pc .icon-btn.trash:hover { color:var(--danger); border-color:#fecdca; }
     table { width:100%; border-collapse:collapse; }
-    th, td { text-align:left; padding:8px; border-bottom:1px solid var(--line); font-size:13px; vertical-align:middle; }
-    th.chk, td.chk { width:36px; }
-    video { width:100%; max-height:420px; background:#000; border-radius:8px; }
+    th, td { text-align:left; padding:10px 8px; border-bottom:1px solid var(--line); font-size:13px; vertical-align:middle; }
+    th.chk, td.chk { width:40px; }
+    video { width:100%; max-height:min(420px, 55vh); background:#000; border-radius:8px; }
     #login { max-width:360px; margin:80px auto; }
     .row { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; align-items:center; }
+    .filters { display:grid; grid-template-columns: 1fr auto auto auto; gap:8px; margin-bottom:10px; align-items:center; }
     .err { color:var(--danger); }
-    .hint { color:#344054; background:#fff8eb; border:1px solid #f5e0a3; border-radius:8px; padding:10px 12px; margin-top:8px; }
     .empty { padding:16px; color:var(--muted); }
     a.dl { color:var(--accent); }
-    .actions { display:flex; gap:4px; flex-wrap:wrap; }
-    .actions button { padding:5px 8px; font-size:12px; }
-    .storage { display:flex; align-items:center; gap:8px; margin-left:auto; min-width:160px; max-width:240px; }
+    .actions { display:flex; gap:12px; flex-wrap:nowrap; align-items:center; justify-content:flex-end; }
+    .actions button { padding:8px 12px; font-size:14px; min-width:42px; min-height:40px; }
+    .storage { display:flex; align-items:center; gap:8px; margin-left:auto; min-width:150px; max-width:260px; }
     .storage .meta { font-size:11px; color:var(--muted); white-space:nowrap; }
-    .storage .bar { flex:1; height:6px; background:#eef0f4; border-radius:99px; overflow:hidden; min-width:56px; }
+    .storage .bar { flex:1; height:6px; background:#eef0f4; border-radius:99px; overflow:hidden; min-width:48px; }
     .storage .bar > i { display:block; height:100%; background:#98a2b3; border-radius:99px; }
     .storage .bar.high > i { background:#f79009; }
     .storage .bar.crit > i { background:#f04438; }
-    .toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px; }
+    .toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:12px; }
+    .rec-cards { display:none; }
+    .rec-card { border:1px solid var(--line); border-radius:10px; padding:12px; margin-bottom:10px; background:#fff; }
+    .rec-card .top { display:flex; gap:10px; align-items:flex-start; margin-bottom:8px; }
+    .rec-card .meta-line { font-size:12px; color:var(--muted); margin-top:2px; word-break:break-word; }
+    .rec-card .title { font-weight:600; word-break:break-word; }
+    .rec-card .actions { justify-content:stretch; margin-top:10px; }
+    .rec-card .actions button { flex:1; }
+
+    @media (max-width:900px) {
+      main { grid-template-columns:1fr; gap:12px; padding:10px; padding-bottom:24px; }
+      header { padding:10px 12px; gap:8px; }
+      header h1 { font-size:15px; width:100%; }
+      .storage { margin-left:0; order:3; width:100%; max-width:none; min-width:0; }
+      #logout { margin-left:auto; }
+      .filters { grid-template-columns:1fr 1fr; }
+      .filters #q { grid-column:1 / -1; }
+      .filters #reload { grid-column:1 / -1; }
+      .toolbar button { flex:1 1 calc(50% - 8px); }
+      #pcs { display:flex; gap:8px; overflow-x:auto; padding-bottom:4px; -webkit-overflow-scrolling:touch; scroll-snap-type:x mandatory; }
+      li.pc { flex:0 0 auto; min-width:200px; max-width:260px; border:1px solid var(--line); scroll-snap-align:start; background:#fafafa; }
+      li.pc.active { border-color:#93c5fd; background:#eef4ff; }
+      .desk-table { display:none; }
+      .rec-cards { display:block; }
+      .actions { gap:14px; }
+      #playerWrap .row { flex-direction:column; align-items:stretch; }
+      #playerWrap .row > * { width:100%; text-align:center; }
+      a.dl { display:inline-block; padding:10px; border:1px solid var(--line); border-radius:8px; background:#fff; }
+    }
+    @media (max-width:420px) {
+      .toolbar button { flex:1 1 100%; }
+      .actions { gap:16px; }
+    }
   </style>
 </head>
 <body>
@@ -68,13 +99,12 @@
       <button class="secondary" id="logout">Выйти</button>
     </header>
     <main>
-      <section class="card">
-        <strong>Рабочие места</strong>
+      <section class="card" id="pcsCard">
         <ul id="pcs"></ul>
       </section>
       <section class="card">
-        <div class="row">
-          <input id="q" placeholder="Поиск по имени / файлу" style="flex:1" />
+        <div class="filters">
+          <input id="q" placeholder="Поиск по имени / файлу" />
           <input id="from" type="date" title="Дата с" />
           <input id="to" type="date" title="Дата по" />
           <button id="reload">Обновить</button>
@@ -90,31 +120,23 @@
           <video id="player" controls preload="metadata" playsinline></video>
           <p class="muted" id="playerMeta"></p>
           <div class="row">
-            <a class="dl" id="downloadLink" href="#" download>Скачать MP4 (HEVC)</a>
+            <a class="dl" id="downloadLink" href="#" download>Скачать MP4</a>
             <button class="danger" id="deleteCurrent" type="button">Удалить эту запись</button>
           </div>
           <p class="err" id="playerErr"></p>
-          <div class="hint" id="hevcHint" hidden>
-            Записи хранятся в <strong>HEVC (H.265)</strong> — формат не меняется.
-            Многие браузеры не декодируют HEVC без системного кодека.
-            <ol style="margin:8px 0 0; padding-left:18px">
-              <li>Откройте эту страницу в <strong>Microsoft Edge</strong> или Chrome на Windows.</li>
-              <li>Установите бесплатно «<strong>Расширения для видео HEVC от производителя устройства</strong>» из Microsoft Store.</li>
-              <li>Перезапустите браузер и нажмите ▶ снова.</li>
-              <li>Либо скачайте файл и откройте в <strong>VLC</strong>.</li>
-            </ol>
-            <p class="muted" style="margin:8px 0 0">Проверка браузера: <span id="hevcSupport">…</span></p>
-          </div>
         </div>
-        <table>
-          <thead>
-            <tr>
-              <th class="chk"><input type="checkbox" id="chkAll" title="Выбрать все" /></th>
-              <th>Время</th><th>ПК</th><th>Файл</th><th>Размер</th><th></th>
-            </tr>
-          </thead>
-          <tbody id="recs"></tbody>
-        </table>
+        <div class="desk-table">
+          <table>
+            <thead>
+              <tr>
+                <th class="chk"><input type="checkbox" id="chkAll" title="Выбрать все" /></th>
+                <th>Время</th><th>ПК</th><th>Файл</th><th>Размер</th><th></th>
+              </tr>
+            </thead>
+            <tbody id="recs"></tbody>
+          </table>
+        </div>
+        <div class="rec-cards" id="recCards"></div>
         <p id="recsEmpty" class="empty" hidden>Нет записей по выбранным фильтрам.</p>
       </section>
     </main>
@@ -122,21 +144,6 @@
 
 <script>
 const state = { token: localStorage.getItem('hsr_admin') || '', pc: '', currentId: null, rows: [] };
-
-function hevcCanPlay() {
-  const v = document.createElement('video');
-  return v.canPlayType('video/mp4; codecs="hvc1.1.6.L93.B0"')
-    || v.canPlayType('video/mp4; codecs="hev1.1.6.L93.B0"')
-    || v.canPlayType('video/mp4; codecs="hvc1"');
-}
-
-function refreshHevcHint(forceShow) {
-  const support = hevcCanPlay();
-  hevcSupport.textContent = support
-    ? ('поддерживается (' + support + ')')
-    : 'не поддерживается этим браузером без кодека HEVC';
-  hevcHint.hidden = !(forceShow || !support);
-}
 
 async function api(path, opts={}) {
   const headers = Object.assign({}, opts.headers || {});
@@ -162,17 +169,9 @@ reload.onclick = () => { loadStorage(); loadPcs(); loadRecs(); };
 q.onchange = from.onchange = to.onchange = () => loadRecs();
 
 player.addEventListener('error', () => {
-  const err = player.error;
-  let msg = 'Не удалось воспроизвести файл.';
-  if (err) {
-    if (err.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED) msg = 'Браузер не смог открыть HEVC. Установите кодек или скачайте файл.';
-    else if (err.code === MediaError.MEDIA_ERR_NETWORK) msg = 'Ошибка сети при загрузке видео.';
-    else if (err.code === MediaError.MEDIA_ERR_DECODE) msg = 'Ошибка декодирования HEVC. Откройте файл в VLC.';
-  }
-  playerErr.textContent = msg;
-  refreshHevcHint(true);
+  playerErr.textContent = 'Не удалось воспроизвести файл. Скачайте и откройте в VLC / Edge с кодеком HEVC.';
 });
-player.addEventListener('loadeddata', () => { playerErr.textContent = ''; hevcHint.hidden = !!hevcCanPlay(); });
+player.addEventListener('loadeddata', () => { playerErr.textContent = ''; });
 
 async function loadStorage(){
   try {
@@ -244,6 +243,20 @@ async function loadPcs(){
   }
 }
 
+function actionButtonsHtml() {
+  return `<div class="actions">
+    <button type="button" data-act="play" title="Смотреть">▶</button>
+    <button type="button" class="secondary" data-act="dl" title="Скачать">⬇</button>
+    <button type="button" class="danger" data-act="del" title="Удалить">🗑</button>
+  </div>`;
+}
+
+function bindRowActions(root, r) {
+  root.querySelector('[data-act="play"]').onclick = () => play(r);
+  root.querySelector('[data-act="dl"]').onclick = () => downloadOne(r);
+  root.querySelector('[data-act="del"]').onclick = () => deleteOne(r);
+}
+
 async function loadRecs(){
   const params = new URLSearchParams();
   if (state.pc) params.set('pc_id', state.pc);
@@ -254,6 +267,7 @@ async function loadRecs(){
   const list = await res.json();
   state.rows = list;
   recs.innerHTML = '';
+  recCards.innerHTML = '';
   recsEmpty.hidden = list.length > 0;
   chkAll.checked = false;
   for (const r of list) {
@@ -265,22 +279,43 @@ async function loadRecs(){
       <td>${escapeHtml(r.display_name)}</td>
       <td>${escapeHtml(r.file_name)}</td>
       <td>${fmtBytes(r.size_bytes)}</td>
-      <td class="actions">
-        <button type="button" data-act="play">▶</button>
-        <button type="button" class="secondary" data-act="dl">⬇</button>
-        <button type="button" class="danger" data-act="del">🗑</button>
-      </td>`;
-    tr.querySelector('[data-act="play"]').onclick = () => play(r);
-    tr.querySelector('[data-act="dl"]').onclick = () => downloadOne(r);
-    tr.querySelector('[data-act="del"]').onclick = () => deleteOne(r);
+      <td>${actionButtonsHtml()}</td>`;
+    bindRowActions(tr, r);
     tr.querySelector('.rowchk').onchange = updateSelUi;
     recs.appendChild(tr);
+
+    const card = document.createElement('div');
+    card.className = 'rec-card';
+    card.dataset.id = String(r.id);
+    card.innerHTML = `
+      <div class="top">
+        <input type="checkbox" class="rowchk" data-id="${r.id}" />
+        <div style="flex:1;min-width:0">
+          <div class="title">${escapeHtml(r.file_name)}</div>
+          <div class="meta-line">${escapeHtml(formatRecordedAt(r.recorded_at))} · ${escapeHtml(r.display_name)} · ${fmtBytes(r.size_bytes)}</div>
+        </div>
+      </div>
+      ${actionButtonsHtml()}`;
+    bindRowActions(card, r);
+    card.querySelector('.rowchk').onchange = () => {
+      syncChecks(r.id, card.querySelector('.rowchk').checked);
+      updateSelUi();
+    };
+    recCards.appendChild(card);
   }
   updateSelUi();
 }
 
+function syncChecks(id, checked) {
+  document.querySelectorAll('.rowchk[data-id="' + id + '"]').forEach(el => { el.checked = checked; });
+}
+
 function selectedIds() {
-  return [...recs.querySelectorAll('.rowchk:checked')].map(el => Number(el.dataset.id));
+  const ids = new Set();
+  document.querySelectorAll('.desk-table .rowchk:checked, .rec-cards .rowchk:checked').forEach(el => {
+    ids.add(Number(el.dataset.id));
+  });
+  return [...ids];
 }
 
 function updateSelUi() {
@@ -288,16 +323,17 @@ function updateSelUi() {
   selCount.textContent = ids.length ? ('Выбрано: ' + ids.length) : '';
   dlSelected.disabled = ids.length === 0;
   delSelected.disabled = ids.length === 0;
-  const boxes = [...recs.querySelectorAll('.rowchk')];
-  chkAll.checked = boxes.length > 0 && boxes.every(b => b.checked);
+  const deskBoxes = [...recs.querySelectorAll('.rowchk')];
+  chkAll.checked = deskBoxes.length > 0 && deskBoxes.every(b => b.checked);
 }
 
 chkAll.onchange = () => {
-  recs.querySelectorAll('.rowchk').forEach(b => { b.checked = chkAll.checked; });
+  const on = chkAll.checked;
+  document.querySelectorAll('.rowchk').forEach(b => { b.checked = on; });
   updateSelUi();
 };
-selAll.onclick = () => { recs.querySelectorAll('.rowchk').forEach(b => { b.checked = true; }); updateSelUi(); };
-selNone.onclick = () => { recs.querySelectorAll('.rowchk').forEach(b => { b.checked = false; }); updateSelUi(); };
+selAll.onclick = () => { document.querySelectorAll('.rowchk').forEach(b => { b.checked = true; }); updateSelUi(); };
+selNone.onclick = () => { document.querySelectorAll('.rowchk').forEach(b => { b.checked = false; }); updateSelUi(); };
 
 dlSelected.onclick = async () => {
   const ids = selectedIds();
@@ -311,10 +347,7 @@ dlSelected.onclick = async () => {
 delSelected.onclick = async () => {
   const ids = selectedIds();
   if (!ids.length) return;
-  const ok = prompt(
-    'Удаление выбранных записей: ' + ids.length + ' шт.\n\nДля подтверждения введите: Удаление'
-  );
-  if (ok !== 'Удаление') return;
+  if (!confirm('Удалить выбранные записи (' + ids.length + ' шт.)?')) return;
   const res = await api('/api/recordings/delete', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -329,10 +362,7 @@ delSelected.onclick = async () => {
 };
 
 async function deleteOne(r) {
-  const ok = prompt(
-    'Удаление записи «' + r.file_name + '».\n\nДля подтверждения введите: Удаление'
-  );
-  if (ok !== 'Удаление') return;
+  if (!confirm('Удалить запись «' + r.file_name + '»?')) return;
   const res = await api('/api/recordings/' + r.id, { method: 'DELETE' });
   if (!res.ok) { alert('Не удалось удалить'); return; }
   if (state.currentId === r.id) {
@@ -381,7 +411,6 @@ function play(r){
   state.currentId = r.id;
   downloadLink.href = mediaUrl(r.id);
   downloadLink.setAttribute('download', r.file_name || 'recording.mp4');
-  refreshHevcHint(false);
   if (r.ready === false) {
     player.removeAttribute('src');
     while (player.firstChild) player.removeChild(player.firstChild);
@@ -396,11 +425,11 @@ function play(r){
   src.type = 'video/mp4; codecs="hvc1.1.6.L120.B0"';
   player.appendChild(src);
   player.load();
-  playerMeta.textContent = r.display_name + ' · ' + r.file_name + ' · ' + fmtBytes(r.size_bytes) + ' · HEVC';
+  playerMeta.textContent = r.display_name + ' · ' + r.file_name + ' · ' + fmtBytes(r.size_bytes);
   player.play().catch(() => {
-    playerErr.textContent = 'Автозапуск заблокирован или кодек HEVC недоступен. Нажмите Play или см. подсказку ниже.';
-    refreshHevcHint(true);
+    playerErr.textContent = 'Автозапуск заблокирован. Нажмите Play или скачайте файл.';
   });
+  playerWrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 function fmtBytes(n){
