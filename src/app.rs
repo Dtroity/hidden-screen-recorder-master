@@ -461,6 +461,10 @@ impl HiddenScreenRecorderApp {
                 self.warning = Some(message);
             }
             RecorderEvent::Finished(path) => {
+                // Archive first — share-folder upload may delete the local file.
+                if let Err(error) = crate::archive_upload::enqueue_and_flush(&self.config, &path) {
+                    self.warning = Some(error);
+                }
                 match crate::upload::upload_recording(&self.config, &path) {
                     Ok(Some(result)) => {
                         self.last_output = Some(result.destination.clone());
@@ -476,9 +480,6 @@ impl HiddenScreenRecorderApp {
                         self.last_output = Some(path.clone());
                         self.warning = Some(error);
                     }
-                }
-                if let Err(error) = crate::archive_upload::enqueue_and_flush(&self.config, &path) {
-                    self.warning = Some(error);
                 }
                 self.recorder.clear();
                 self.recorder_events = None;
@@ -1627,11 +1628,17 @@ impl HiddenScreenRecorderApp {
             .color(MUTED),
         );
         ui.add_space(4.0);
-        toggle_row(
+        let mut archive_enabled = self.config.archive_upload_enabled;
+        if toggle_row(
             ui,
             language.text("Send to archive server", "Отправлять на сервер архива"),
-            &mut self.config.archive_upload_enabled,
-        );
+            &mut archive_enabled,
+        )
+        .changed()
+        {
+            self.config.archive_upload_enabled = archive_enabled;
+            self.save_config();
+        }
         let mut archive_url = self.config.archive_url.clone().unwrap_or_default();
         row(
             ui,
@@ -1654,6 +1661,7 @@ impl HiddenScreenRecorderApp {
                         Some(t.to_owned())
                     };
                     self.archive_test_message = None;
+                    self.save_config();
                 }
             },
         );
@@ -1676,6 +1684,7 @@ impl HiddenScreenRecorderApp {
                     Some(t.to_owned())
                 };
                 self.archive_test_message = None;
+                self.save_config();
             }
         });
         ui.horizontal(|ui| {
@@ -1688,7 +1697,12 @@ impl HiddenScreenRecorderApp {
             {
                 self.archive_test_message = Some(
                     match crate::archive_upload::test_connection(&self.config) {
-                        Ok(msg) => msg,
+                        Ok(msg) => {
+                            // Successful probe ⇒ enable upload and persist so the agent sees it.
+                            self.config.archive_upload_enabled = true;
+                            self.save_config();
+                            msg
+                        }
                         Err(err) => format!("FAIL: {err}"),
                     },
                 );
@@ -1702,12 +1716,18 @@ impl HiddenScreenRecorderApp {
             };
             ui.label(RichText::new(msg).size(11.0).color(color));
         }
-        if self.config.archive_upload_enabled {
-            toggle_row(
+        if self.config.archive_upload_active() {
+            let mut delete_local = self.config.archive_delete_local;
+            if toggle_row(
                 ui,
                 language.text("Delete local after archive upload", "Удалять локальный после архива"),
-                &mut self.config.archive_delete_local,
-            );
+                &mut delete_local,
+            )
+            .changed()
+            {
+                self.config.archive_delete_local = delete_local;
+                self.save_config();
+            }
             ui.label(
                 RichText::new(crate::archive_upload::status_summary())
                     .size(11.0)

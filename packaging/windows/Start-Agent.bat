@@ -17,6 +17,14 @@ REM Clear admin-stop so the agent and watchdog may run again.
 if exist "!BIN!\agent.admin-stopped" del "!BIN!\agent.admin-stopped" >nul 2>&1
 if exist "!BIN!\agent.stop" del "!BIN!\agent.stop" >nul 2>&1
 
+REM Autostart after reboot/logon (HKCU Run) — required for orphan partial recovery.
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "OfficePC-RecorderAgent" /t REG_SZ /d "\"!BIN!\recorder-agent.exe\"" /f >nul 2>&1
+if errorlevel 1 (
+  echo [WARN] Could not register logon autostart. Enable it in the console.
+) else (
+  echo Autostart registered: agent starts after Windows logon.
+)
+
 tasklist /FI "IMAGENAME eq recorder-agent.exe" 2>nul | findstr /I /C:"recorder-agent.exe" >nul
 if not errorlevel 1 (
   echo Agent already running.
@@ -38,12 +46,15 @@ echo Agent started.
 set "WATCH=%CD%\Watch-Agent.bat"
 if not exist "!WATCH!" set "WATCH=%CD%\packaging\windows\Watch-Agent.bat"
 if exist "!WATCH!" (
-  schtasks /Create /TN "OfficePC-RecorderAgentWatchdog" /SC MINUTE /MO 2 /TR "\"!WATCH!\"" /RU "%USERNAME%" /F >nul 2>&1
+  schtasks /Create /TN "OfficePC-RecorderAgentWatchdog" /SC MINUTE /MO 2 /TR "\"!WATCH!\"" /F >nul 2>&1
   if errorlevel 1 (
     echo [WARN] Could not register watchdog task. Agent still started.
   ) else (
     echo Watchdog installed: restarts after crashes ^(not after Stop-Agent^).
   )
 )
+echo.
+echo Settings: %CD%\settings.json  ^(portable; created by the console^)
+echo Archive log: %%LOCALAPPDATA%%\hidden-screen-recorder\archive_upload.log
 echo.
 pause

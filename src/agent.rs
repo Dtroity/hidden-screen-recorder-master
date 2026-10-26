@@ -60,11 +60,20 @@ pub fn run() -> Result<(), String> {
         crate::session::try_claim_agent_instance().map_err(|error| error.to_string())?;
 
     clear_stop_request();
+    crate::shutdown::install();
 
     let power = PowerState::new();
     let _power_thread = crate::power::spawn_watcher(power.clone());
 
-    // Retry anything left in the persistent queue / local folder (server was offline, sleep, etc.).
+    debug_log::write(format!(
+        "agent: archive_active={} url={:?}",
+        config.archive_upload_active(),
+        config
+            .archive_url
+            .as_ref()
+            .map(|u| u.trim().trim_end_matches('/').to_owned())
+    ));
+    // Recover orphan *.partial.mp4 from reboot + retry pending uploads.
     if let Err(error) = crate::archive_upload::recover_pending_and_flush(&config) {
         debug_log::write(error.to_string());
     }
@@ -90,19 +99,29 @@ pub fn run() -> Result<(), String> {
     loop {
         pump_windows_messages();
 
-        if admin_stopped() || stop_request_pending() {
+        let system_shutdown = crate::shutdown::requested();
+        if admin_stopped() || stop_request_pending() || system_shutdown {
             if !shutdown_requested {
-                debug_log::write("agent: stop requested (Stop-Agent / console / admin-stopped)");
+                debug_log::write(if system_shutdown {
+                    "agent: stop requested (Windows logoff/reboot/shutdown)"
+                } else {
+                    "agent: stop requested (Stop-Agent / console / admin-stopped)"
+                });
                 shutdown_requested = true;
                 // Ensure both flags so watchdog stays off even if only one was written.
-                if let Some(path) = admin_stopped_flag_path() {
-                    let _ = std::fs::write(path, b"1\n");
+                if !system_shutdown {
+                    if let Some(path) = admin_stopped_flag_path() {
+                        let _ = std::fs::write(path, b"1\n");
+                    }
                 }
             }
             if matches!(phase, AgentPhase::Recording) {
                 request_stop(&mut recorder, &mut phase, &stop_signal);
             }
             if matches!(phase, AgentPhase::Idle) {
+                // Best-effort flush before Windows kills the process.
+                let _ = crate::archive_upload::flush_queue(&config);
+                crate::shutdown::mark_drained();
                 break;
             }
         }
@@ -160,14 +179,16 @@ pub fn run() -> Result<(), String> {
             }
             last_config_reload = Instant::now();
         }
-        if last_archive_flush.elapsed() > Duration::from_secs(30) {
+        if last_archive_flush.elapsed() > Duration::from_secs(15) {
             if let Err(error) = crate::archive_upload::flush_queue(&config) {
                 debug_log::write(error.to_string());
             }
             last_archive_flush = Instant::now();
         }
-        // Periodic folder scan: catch files finished while the agent was stopping/offline.
-        if last_archive_recover.elapsed() > Duration::from_secs(120) {
+        // Periodic folder scan only while idle — never touch a live *.partial.mp4.
+        if matches!(phase, AgentPhase::Idle)
+            && last_archive_recover.elapsed() > Duration::from_secs(60)
+        {
             if let Err(error) = crate::archive_upload::recover_pending_and_flush(&config) {
                 debug_log::write(error.to_string());
             }
@@ -239,9 +260,34 @@ pub fn run() -> Result<(), String> {
     if matches!(phase, AgentPhase::Recording | AgentPhase::Stopping) {
         stop_signal.store(true, Ordering::Release);
         recorder.stop();
-        thread::sleep(Duration::from_millis(800));
+        // Wait for Finished/Failed so moov is written when possible (reboot path).
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < deadline {
+            if let Some(receiver) = &recorder_events {
+                let events: Vec<_> = receiver.try_iter().collect();
+                for event in events {
+                    handle_recorder_event(
+                        event,
+                        &config,
+                        &mut recorder,
+                        &mut recorder_events,
+                        &mut phase,
+                        &mut failure_cooldown_until,
+                    );
+                }
+            }
+            if matches!(phase, AgentPhase::Idle) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(200));
+        }
+        if !matches!(phase, AgentPhase::Idle) {
+            thread::sleep(Duration::from_millis(500));
+        }
     }
+    let _ = crate::archive_upload::flush_queue(&config);
     clear_stop_request();
+    crate::shutdown::mark_drained();
     debug_log::write("recorder-agent stopped");
     Ok(())
 }
@@ -344,6 +390,16 @@ fn handle_recorder_event(
         RecorderEvent::Finished(path) => {
             debug_log::write(format!("agent: recording finished -> {}", path.display()));
             *failure_cooldown_until = None;
+            // Archive HTTP upload first (OfficePC primary path). Share-folder copy
+            // may delete the local file when upload_delete_local is on.
+            thread::sleep(Duration::from_millis(400));
+            match crate::archive_upload::enqueue_and_flush(config, &path) {
+                Ok(()) => debug_log::write(format!(
+                    "agent: archive enqueue/flush ok for {}",
+                    path.display()
+                )),
+                Err(error) => debug_log::write(error.to_string()),
+            }
             match upload::upload_recording(config, &path) {
                 Ok(Some(result)) => debug_log::write(format!(
                     "agent: uploaded to {} (deleted_local={})",
@@ -351,10 +407,6 @@ fn handle_recorder_event(
                     result.deleted_local
                 )),
                 Ok(None) => {}
-                Err(error) => debug_log::write(error.to_string()),
-            }
-            match crate::archive_upload::enqueue_and_flush(config, &path) {
-                Ok(()) => {}
                 Err(error) => debug_log::write(error.to_string()),
             }
             recorder.clear();

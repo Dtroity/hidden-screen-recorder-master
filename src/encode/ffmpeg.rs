@@ -237,9 +237,12 @@ impl FfmpegEncoder {
         } else {
             args.push("-an".into());
         }
+        // Crash/reboot-resilient mux: moov at the start (empty_moov) + fragmented
+        // media. Hard kill leaves a playable prefix instead of a useless *.partial
+        // that only +faststart would have finalized at process exit.
         args.extend([
             "-movflags".into(),
-            "+faststart".into(),
+            "+frag_keyframe+empty_moov+default_base_moof".into(),
             "-write_tmcd".into(),
             "0".into(),
             // Explicit muxer: required when the temp name is not a plain ".mp4".
@@ -464,7 +467,7 @@ impl EncodeSink for FfmpegEncoder {
             let _ = fs::remove_file(&self.partial);
             return Err("FFmpeg output file is too small to be a valid MP4".into());
         }
-        // Replace the empty reserved path with the finalized MP4 (moov rewritten by faststart).
+        // Promote temp → final (fragmented MP4 already has moov; no faststart rewrite).
         if self.output.exists() {
             fs::remove_file(&self.output).map_err(|error| {
                 format!(

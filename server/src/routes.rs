@@ -137,8 +137,12 @@ pub async fn delete_recording(
     AxumPath(id): AxumPath<i64>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     require_admin(&state, &headers)?;
-    let deleted = delete_recording_files(&state, &[id]).await?;
-    Ok(Json(serde_json::json!({ "deleted": deleted })))
+    let (deleted, deleted_ids, missing) = delete_recording_files(&state, &[id]).await?;
+    Ok(Json(serde_json::json!({
+        "deleted": deleted,
+        "deleted_ids": deleted_ids,
+        "missing_ids": missing
+    })))
 }
 
 /// POST /api/recordings/delete — batch delete by ids.
@@ -154,29 +158,57 @@ pub async fn delete_recordings_batch(
     if body.ids.len() > 500 {
         return Err(StatusCode::BAD_REQUEST);
     }
-    let deleted = delete_recording_files(&state, &body.ids).await?;
-    Ok(Json(serde_json::json!({ "deleted": deleted })))
+    let (deleted, deleted_ids, missing) = delete_recording_files(&state, &body.ids).await?;
+    Ok(Json(serde_json::json!({
+        "deleted": deleted,
+        "deleted_ids": deleted_ids,
+        "missing_ids": missing
+    })))
 }
 
-async fn delete_recording_files(state: &AppState, ids: &[i64]) -> Result<usize, StatusCode> {
+async fn delete_recording_files(
+    state: &AppState,
+    ids: &[i64],
+) -> Result<(usize, Vec<i64>, Vec<i64>), StatusCode> {
+    // Preserve caller order; skip duplicates so each id is attempted once.
+    let mut seen = std::collections::HashSet::new();
+    let mut unique_ids = Vec::new();
+    for id in ids {
+        if seen.insert(*id) {
+            unique_ids.push(*id);
+        }
+    }
+
     let rows = state
         .db
-        .recordings_by_ids(ids)
+        .recordings_by_ids(&unique_ids)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let mut deleted = 0usize;
+    let found: std::collections::HashSet<i64> = rows.iter().map(|r| r.id).collect();
+    let missing: Vec<i64> = unique_ids
+        .iter()
+        .copied()
+        .filter(|id| !found.contains(id))
+        .collect();
+
+    let mut deleted_ids = Vec::new();
     for row in rows {
         if let Some(abs) = safe_join(&state.cfg.archive_dir, &row.relative_path) {
             let _ = tokio::fs::remove_file(&abs).await;
-            // Best-effort: remove empty parent day/month dirs.
+            // Best-effort: remove empty parent day/month dirs only (never recursive).
             if let Some(parent) = abs.parent() {
                 let _ = tokio::fs::remove_dir(parent).await;
             }
         }
-        if state.db.delete_recording_row(row.id).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.is_some() {
-            deleted += 1;
+        if state
+            .db
+            .delete_recording_row(row.id)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .is_some()
+        {
+            deleted_ids.push(row.id);
         }
     }
-    Ok(deleted)
+    Ok((deleted_ids.len(), deleted_ids, missing))
 }
 
 /// DELETE /api/computers/{pc_id} — wipe all recordings for a workplace + DB rows.

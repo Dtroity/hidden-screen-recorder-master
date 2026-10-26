@@ -2,6 +2,7 @@ use std::{
     fs,
     io::Write,
     path::{Path, PathBuf},
+    sync::OnceLock,
 };
 
 use directories::ProjectDirs;
@@ -327,24 +328,87 @@ impl AppConfig {
     pub fn audio_enabled(&self) -> bool {
         self.system_audio || self.microphone
     }
+
+    /// True when archive HTTP upload should run (toggle on, or URL+token both set).
+    pub fn archive_upload_active(&self) -> bool {
+        let url_ok = self
+            .archive_url
+            .as_ref()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
+        let token_ok = self
+            .archive_token
+            .as_ref()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
+        (self.archive_upload_enabled || (url_ok && token_ok)) && url_ok && token_ok
+    }
+
+    /// Candidate settings locations for a portable OfficePC pack:
+    /// 1) `OfficePC/settings.json` (parent of `bin\`)
+    /// 2) next to the exe
+    /// 3) `%APPDATA%\hidden-screen-recorder\config\settings.json`
+    /// 4) legacy ScreenRecord AppData path
+    fn candidate_paths() -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+        if let Ok(exe) = std::env::current_exe()
+            && let Some(dir) = exe.parent()
+        {
+            if dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.eq_ignore_ascii_case("bin"))
+                && let Some(root) = dir.parent()
+            {
+                paths.push(root.join("settings.json"));
+            }
+            paths.push(dir.join("settings.json"));
+        }
+        if let Some(dirs) = ProjectDirs::from("dev", "", "hidden-screen-recorder") {
+            paths.push(dirs.config_dir().join("settings.json"));
+        }
+        if let Some(dirs) = ProjectDirs::from("dev", "ScreenRecord", "ScreenRecord") {
+            paths.push(dirs.config_dir().join("settings.json"));
+        }
+        paths
+    }
+
     fn path() -> Option<PathBuf> {
-        ProjectDirs::from("dev", "", "hidden-screen-recorder")
-            .map(|dirs| dirs.config_dir().join("settings.json"))
+        // Prefer an already-used path (load/save stick to the same file).
+        if let Some(cached) = SETTINGS_PATH.get() {
+            return Some(cached.clone());
+        }
+        let candidates = Self::candidate_paths();
+        for path in &candidates {
+            if path.is_file() {
+                return Some(path.clone());
+            }
+        }
+        candidates.into_iter().next()
+    }
+
+    fn remember_path(path: &Path) {
+        let _ = SETTINGS_PATH.set(path.to_path_buf());
     }
 
     pub fn load() -> Result<(Self, Option<Message>), Message> {
-        let path = Self::path().ok_or(msg!(
-            "The settings directory is unavailable",
-            "Каталог настроек недоступен"
-        ))?;
-        let legacy = ProjectDirs::from("dev", "ScreenRecord", "ScreenRecord")
-            .map(|dirs| dirs.config_dir().join("settings.json"));
-        let source = if path.exists() {
-            path
-        } else {
-            legacy.filter(|p| p.exists()).unwrap_or(path)
-        };
-        Self::load_from(&source)
+        let candidates = Self::candidate_paths();
+        if candidates.is_empty() {
+            return Err(msg!(
+                "The settings directory is unavailable",
+                "Каталог настроек недоступен"
+            ));
+        }
+        for path in &candidates {
+            if path.is_file() {
+                Self::remember_path(path);
+                return Self::load_from(path);
+            }
+        }
+        // Fresh install: prefer portable OfficePC/settings.json when running from bin\.
+        let preferred = candidates[0].clone();
+        Self::remember_path(&preferred);
+        Self::load_from(&preferred)
     }
 
     fn load_from(path: &Path) -> Result<(Self, Option<Message>), Message> {
@@ -495,6 +559,7 @@ impl AppConfig {
             "The settings directory is unavailable",
             "Каталог настроек недоступен"
         ))?;
+        Self::remember_path(&path);
         self.save_to(&path).map_err(|error| {
             msg!(
                 "Could not save {}: {error}",
@@ -514,6 +579,8 @@ impl AppConfig {
         Ok(())
     }
 }
+
+static SETTINGS_PATH: OnceLock<PathBuf> = OnceLock::new();
 
 #[cfg(test)]
 mod tests {

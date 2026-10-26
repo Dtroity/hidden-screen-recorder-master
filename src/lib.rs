@@ -16,6 +16,7 @@ pub mod power;
 pub mod recorder;
 pub mod schedule;
 pub mod session;
+pub mod shutdown;
 pub mod speex;
 pub mod upload;
 pub mod window;

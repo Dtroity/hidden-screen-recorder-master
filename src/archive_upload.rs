@@ -92,7 +92,11 @@ fn save_queue(queue: &UploadQueue) -> Result<(), String> {
 
 /// Enqueue a finished local recording and try to flush the queue.
 pub fn enqueue_and_flush(config: &AppConfig, local_path: &Path) -> Result<(), Message> {
-    if !config.archive_upload_enabled {
+    if !config.archive_upload_active() {
+        always_log(&format!(
+            "skip enqueue (archive URL/token missing or upload off): {}",
+            local_path.display()
+        ));
         return Ok(());
     }
     ensure_archive_settings(config)?;
@@ -104,6 +108,7 @@ pub fn enqueue_and_flush(config: &AppConfig, local_path: &Path) -> Result<(), Me
         ));
     }
 
+    always_log(&format!("enqueue {}", local_path.display()));
     let _mem = QUEUE_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let _disk = acquire_queue_lock();
     enqueue_path_locked(config, local_path);
@@ -112,7 +117,7 @@ pub fn enqueue_and_flush(config: &AppConfig, local_path: &Path) -> Result<(), Me
 
 /// Retry pending uploads (call periodically from the agent).
 pub fn flush_queue(config: &AppConfig) -> Result<(), Message> {
-    if !config.archive_upload_enabled {
+    if !config.archive_upload_active() {
         return Ok(());
     }
     let _mem = QUEUE_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
@@ -120,22 +125,52 @@ pub fn flush_queue(config: &AppConfig) -> Result<(), Message> {
     flush_queue_locked(config)
 }
 
-/// On agent start / wake: re-queue local finished MP4s that never reached the server,
-/// then flush. Safe with idempotency keys (no archive duplicates).
+/// On agent start / wake: recover orphan partials, re-queue finished MP4s, flush.
 pub fn recover_pending_and_flush(config: &AppConfig) -> Result<(), Message> {
-    if !config.archive_upload_enabled {
+    // Always clean orphan FFmpeg temps left by reboot (even if archive upload is off).
+    let recovered_partials =
+        crate::recorder::recover_orphan_partials(&config.effective_output_dir());
+
+    if !config.archive_upload_active() {
         return Ok(());
     }
     ensure_archive_settings(config)?;
     let _mem = QUEUE_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let _disk = acquire_queue_lock();
+    for path in &recovered_partials {
+        enqueue_path_locked(config, path);
+    }
     let added = scan_and_enqueue_local_locked(config);
-    if added > 0 {
+    if added > 0 || !recovered_partials.is_empty() {
         debug_log::write(format!(
-            "archive queue: recovered {added} local recording(s) for upload"
+            "archive queue: recovered {} local recording(s) for upload ({} from partials)",
+            added + recovered_partials.len(),
+            recovered_partials.len()
+        ));
+        always_log(&format!(
+            "recovered {} file(s), {} from orphan partials",
+            added + recovered_partials.len(),
+            recovered_partials.len()
         ));
     }
     flush_queue_locked(config)
+}
+
+fn always_log(line: &str) {
+    debug_log::write(format!("archive: {line}"));
+    let Some(path) = queue_path().map(|p| p.with_file_name("archive_upload.log")) else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(
+            f,
+            "{} {line}",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+        );
+    }
 }
 
 fn ensure_archive_settings(config: &AppConfig) -> Result<(), Message> {
@@ -245,6 +280,7 @@ fn flush_queue_locked(config: &AppConfig) -> Result<(), Message> {
         .map(|s| s.trim())
         .filter(|s| !s.is_empty());
     let (Some(base), Some(token)) = (url, token) else {
+        always_log("flush skipped: archive URL or token empty");
         return Ok(());
     };
 
@@ -252,6 +288,7 @@ fn flush_queue_locked(config: &AppConfig) -> Result<(), Message> {
     if queue.items.is_empty() {
         return Ok(());
     }
+    always_log(&format!("flush start: {} item(s) -> {base}", queue.items.len()));
 
     let pending: Vec<QueueItem> = queue.items.drain(..).collect();
     let mut remaining = Vec::new();
@@ -286,6 +323,11 @@ fn flush_queue_locked(config: &AppConfig) -> Result<(), Message> {
                 // Never log the bearer token — error text is HTTP status / body only.
                 debug_log::write(format!(
                     "archive upload failed (attempt {}): {} — {error}",
+                    item.attempts,
+                    item.path.display()
+                ));
+                always_log(&format!(
+                    "queue fail attempt {} {}: {error}",
                     item.attempts,
                     item.path.display()
                 ));
@@ -412,6 +454,25 @@ fn idempotency_key(pc: &str, path: &Path) -> String {
 }
 
 fn post_file(config: &AppConfig, base: &str, token: &str, path: &Path) -> Result<(), String> {
+    // AV may briefly lock a just-finalized file; retry open/send a few times.
+    let mut last = String::new();
+    for attempt in 1..=4 {
+        match post_file_once(config, base, token, path) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                last = error;
+                always_log(&format!(
+                    "upload attempt {attempt}/4 failed for {}: {last}",
+                    path.display()
+                ));
+                std::thread::sleep(std::time::Duration::from_millis(400 * attempt as u64));
+            }
+        }
+    }
+    Err(last)
+}
+
+fn post_file_once(config: &AppConfig, base: &str, token: &str, path: &Path) -> Result<(), String> {
     let endpoint = format!("{base}/api/upload");
     let file_name = path
         .file_name()
@@ -445,7 +506,9 @@ fn post_file(config: &AppConfig, base: &str, token: &str, path: &Path) -> Result
     let len = tmp.as_file().metadata().map_err(|e| e.to_string())?.len();
     let body = File::open(tmp.path()).map_err(|e| e.to_string())?;
 
+    // Default ureq timeout (~30s) is too short for office recordings over WAN.
     let resp = ureq::post(&endpoint)
+        .timeout(std::time::Duration::from_secs(900))
         .set("Authorization", &format!("Bearer {token}"))
         .set("X-PC-ID", &pc)
         .set("X-Display-Name", &pc)
@@ -456,16 +519,27 @@ fn post_file(config: &AppConfig, base: &str, token: &str, path: &Path) -> Result
             &format!("multipart/form-data; boundary={boundary}"),
         )
         .set("Content-Length", &len.to_string())
-        .send(body)
-        .map_err(|e| e.to_string())?;
+        .send(body);
 
-    let status = resp.status();
-    if !(200..300).contains(&status) {
-        let text = resp.into_string().unwrap_or_default();
-        let safe = text.chars().take(200).collect::<String>();
-        return Err(format!("HTTP {status}: {safe}"));
+    match resp {
+        Ok(r) => {
+            let status = r.status();
+            if (200..300).contains(&status) {
+                always_log(&format!("upload ok {} (HTTP {status})", path.display()));
+                Ok(())
+            } else {
+                let text = r.into_string().unwrap_or_default();
+                let safe = text.chars().take(200).collect::<String>();
+                Err(format!("HTTP {status}: {safe}"))
+            }
+        }
+        Err(ureq::Error::Status(code, r)) => {
+            let text = r.into_string().unwrap_or_default();
+            let safe = text.chars().take(200).collect::<String>();
+            Err(format!("HTTP {code}: {safe}"))
+        }
+        Err(e) => Err(e.to_string()),
     }
-    Ok(())
 }
 
 fn file_mtime_rfc3339(path: &Path) -> Option<String> {

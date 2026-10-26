@@ -16,11 +16,13 @@ use windows::Win32::System::Power::{
     DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS, HPOWERNOTIFY, PowerRegisterSuspendResumeNotification,
     RegisterSuspendResumeNotification, UnregisterSuspendResumeNotification,
 };
+use windows::Win32::System::Shutdown::{ShutdownBlockReasonCreate, ShutdownBlockReasonDestroy};
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DEVICE_NOTIFY_CALLBACK, DEVICE_NOTIFY_WINDOW_HANDLE,
     DefWindowProcW, DestroyWindow, DispatchMessageW, GWLP_USERDATA, GetMessageW, GetWindowLongPtrW,
-    MSG, PostQuitMessage, RegisterClassW, SetWindowLongPtrW, TranslateMessage, WINDOW_EX_STYLE,
-    WINDOW_STYLE, WM_DESTROY, WM_POWERBROADCAST, WNDCLASSW,
+    MSG, PostQuitMessage, RegisterClassW, SetWindowLongPtrW, TranslateMessage, WM_DESTROY,
+    WM_ENDSESSION, WM_POWERBROADCAST, WM_QUERYENDSESSION, WNDCLASSW, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_POPUP,
 };
 use windows::core::w;
 
@@ -185,15 +187,17 @@ fn run_message_loop(state: PowerState) -> Result<(), String> {
         };
         let _ = RegisterClassW(&wnd_class);
 
+        // Real top-level HWND (1×1 popup, no taskbar) so WM_QUERYENDSESSION /
+        // WM_ENDSESSION are delivered on reboot/logoff — a 0×0 style-0 window is unreliable.
         let hwnd = CreateWindowExW(
-            WINDOW_EX_STYLE::default(),
+            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
             class_name,
             w!("Office PC Recorder Power"),
-            WINDOW_STYLE::default(),
+            WS_POPUP,
             0,
             0,
-            0,
-            0,
+            1,
+            1,
             None,
             None,
             Some(module.into()),
@@ -204,6 +208,10 @@ fn run_message_loop(state: PowerState) -> Result<(), String> {
         let boxed = Box::new(state);
         let raw = Box::into_raw(boxed);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, raw as isize);
+        crate::debug_log::write(format!(
+            "power: end-session window ready hwnd={:?}",
+            hwnd.0
+        ));
 
         let notify = RegisterSuspendResumeNotification(HANDLE(hwnd.0), DEVICE_NOTIFY_WINDOW_HANDLE);
         let notify_handle = match notify {
@@ -257,6 +265,25 @@ unsafe extern "system" fn power_wnd_proc(
                 }
             }
             LRESULT(1)
+        }
+        // GUI agent path for reboot/logoff (SetConsoleCtrlHandler is unreliable here).
+        WM_QUERYENDSESSION => {
+            crate::debug_log::write("power: WM_QUERYENDSESSION — requesting graceful stop");
+            crate::shutdown::request();
+            let reason = w!("Office Recorder: finishing recording before shutdown");
+            let _ = unsafe { ShutdownBlockReasonCreate(hwnd, reason) };
+            LRESULT(1) // TRUE — allow session end; we block briefly via ShutdownBlockReason
+        }
+        WM_ENDSESSION => {
+            let ending = wparam.0 != 0;
+            crate::debug_log::write(format!("power: WM_ENDSESSION ending={ending}"));
+            if ending {
+                crate::shutdown::request();
+                // Give the agent time to stop FFmpeg and write moov (sleep path already works).
+                crate::shutdown::wait_for_drain(Duration::from_secs(25));
+            }
+            let _ = unsafe { ShutdownBlockReasonDestroy(hwnd) };
+            LRESULT(0)
         }
         WM_DESTROY => {
             unsafe { PostQuitMessage(0) };

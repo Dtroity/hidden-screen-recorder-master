@@ -29,23 +29,32 @@ Copy-Item (Join-Path $PSScriptRoot "Start-Console.bat") $Dist
 Copy-Item (Join-Path $PSScriptRoot "Start-Agent.bat") $Dist
 Copy-Item (Join-Path $PSScriptRoot "Stop-Agent.bat") $Dist
 Copy-Item (Join-Path $PSScriptRoot "Watch-Agent.bat") $Dist
+Copy-Item (Join-Path $PSScriptRoot "settings.example.json") (Join-Path $Dist "settings.example.json")
 
 @"
-Office Recorder — комплект для офисного ПК
-==========================================
-Только консоль и агент (без сервера архива и вьюера).
+Office Recorder — автономный комплект для офисного ПК
+====================================================
+Эта папка самодостаточна: копируйте её целиком на ПК (bin\ + BAT + settings).
 
-  Start-Console.bat   — панель управления (настройки + старт/стоп агента)
-  Start-Agent.bat     — запуск агента + watchdog
-  Stop-Agent.bat      — остановка админом
+  Start-Console.bat   — настройки (архив URL/токен сохраняются сразу)
+  Start-Agent.bat     — запуск агента + автозапуск после перезагрузки + watchdog
+  Stop-Agent.bat      — остановка админом (до следующего Start-Agent)
   Watch-Agent.bat     — служебный (планировщик)
+  settings.example.json — шаблон: скопируйте в settings.json и подставьте токен
+  settings.json       — создаётся консолью рядом с этими BAT (портативно)
   bin\
     hidden-screen-recorder.exe
     recorder-agent.exe
     ffmpeg.exe          — HEVC (libx265), обязателен
 
-Настройка архива: вкладка «Архив» в консоли (URL VPS + токен).
-Кодирование: FFmpeg HEVC (по умолчанию). Не удаляйте ffmpeg.exe из bin\.
+Первый запуск на офисном ПК:
+  1) Скопируйте settings.example.json → settings.json, укажите archive_url и archive_token
+     ИЛИ откройте Start-Console.bat → вкладка «Архив» → URL + токен → «Проверить подключение»
+  2) Start-Agent.bat  (регистрирует автозапуск после reboot)
+  3) После reboot агент должен стартовать сам и дослать неотправленные MP4
+
+Кодирование: FFmpeg HEVC. Не удаляйте ffmpeg.exe из bin\.
+Журнал выгрузки: %LOCALAPPDATA%\hidden-screen-recorder\archive_upload.log
 "@ | Set-Content -Path (Join-Path $Dist "README-RU.txt") -Encoding UTF8
 
 $size = (Get-ChildItem $Dist -Recurse -File | Measure-Object Length -Sum).Sum

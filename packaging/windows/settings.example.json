@@ -1,0 +1,23 @@
+{
+  "language": "ru",
+  "encode_backend": "ffmpeg",
+  "quality_profile": "balanced",
+  "system_audio": false,
+  "microphone": false,
+  "logging_enabled": true,
+  "hide_window": true,
+  "pc_id": null,
+  "archive_upload_enabled": true,
+  "archive_url": "http://185.186.142.51:8787",
+  "archive_token": "PASTE_AGENT_TOKEN_HERE",
+  "archive_delete_local": true,
+  "agent_auto_record": true,
+  "agent_autostart": true,
+  "stop_on_sleep": true,
+  "record_on_wake": true,
+  "schedule": {
+    "enabled": false,
+    "start_minutes": 540,
+    "end_minutes": 1080
+  }
+}

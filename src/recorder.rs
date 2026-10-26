@@ -271,6 +271,82 @@ fn release_reserved_output(path: &Path) {
     }
 }
 
+/// After reboot/crash: promote playable `*.partial.mp4` to final `.mp4`, delete the rest.
+/// Returns paths of recovered final files (ready to upload).
+///
+/// Skips files that are still locked (active FFmpeg encode) — rename fails on Windows.
+pub fn recover_orphan_partials(output_dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(output_dir) else {
+        return Vec::new();
+    };
+    let mut recovered = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let lower = name.to_ascii_lowercase();
+        let final_name = if let Some(prefix) = lower.strip_suffix(".partial.mp4") {
+            format!("{}.mp4", &name[..prefix.len()])
+        } else if let Some(prefix) = lower.strip_suffix(".mp4.partial") {
+            format!("{}.mp4", &name[..prefix.len()])
+        } else {
+            continue;
+        };
+        // Still growing / locked by encoder → leave alone.
+        if file_recently_modified(&path, std::time::Duration::from_secs(8)) {
+            debug_log::write(format!(
+                "orphan partial skip (still writing): {}",
+                path.display()
+            ));
+            continue;
+        }
+        let final_path = output_dir.join(&final_name);
+        if mp4_is_playable(&path) {
+            if final_path.exists() {
+                let _ = fs::remove_file(&path);
+                debug_log::write(format!(
+                    "orphan partial discarded (final already exists): {}",
+                    path.display()
+                ));
+                continue;
+            }
+            match fs::rename(&path, &final_path) {
+                Ok(()) => {
+                    debug_log::write(format!(
+                        "orphan partial recovered -> {}",
+                        final_path.display()
+                    ));
+                    recovered.push(final_path);
+                }
+                Err(error) => {
+                    debug_log::write(format!(
+                        "orphan partial rename failed {}: {error}",
+                        path.display()
+                    ));
+                }
+            }
+        } else {
+            let _ = fs::remove_file(&path);
+            debug_log::write(format!(
+                "orphan partial discarded (no moov): {}",
+                path.display()
+            ));
+        }
+    }
+    recovered
+}
+
+fn file_recently_modified(path: &Path, max_age: std::time::Duration) -> bool {
+    let Ok(meta) = fs::metadata(path) else {
+        return false;
+    };
+    let Ok(modified) = meta.modified() else {
+        return false;
+    };
+    modified.elapsed().map(|age| age < max_age).unwrap_or(false)
+}
+
 fn emit_finished_or_reject(events: &Sender<RecorderEvent>, output: PathBuf) {
     if mp4_is_playable(&output) {
         debug_log::write(format!(

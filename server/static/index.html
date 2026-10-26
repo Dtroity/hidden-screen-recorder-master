@@ -153,7 +153,14 @@
   </div>
 
 <script>
-const state = { token: localStorage.getItem('hsr_admin') || '', pc: '', currentId: null, rows: [] };
+const state = {
+  token: localStorage.getItem('hsr_admin') || '',
+  pc: '',
+  currentId: null,
+  rows: [],
+  /** @type {Set<number>} single source of truth — table + cards stay in sync */
+  selected: new Set(),
+};
 
 async function api(path, opts={}) {
   const headers = Object.assign({}, opts.headers || {});
@@ -247,7 +254,9 @@ async function loadPcs(){
       if (!res.ok) { alert('Не удалось удалить архив'); return; }
       if (state.pc === c.pc_id) state.pc = '';
       playerWrap.hidden = true;
-      loadStorage(); loadPcs(); loadRecs();
+      state.currentId = null;
+      state.selected.clear();
+      await refreshAfterMutation();
     };
     pcs.appendChild(li);
   }
@@ -274,32 +283,48 @@ async function loadRecs(){
   if (from.value) params.set('from', from.value + 'T00:00:00Z');
   if (to.value) params.set('to', to.value + 'T23:59:59Z');
   const res = await api('/api/recordings?' + params.toString());
+  if (!res.ok) {
+    recsEmpty.hidden = false;
+    recsEmpty.textContent = 'Не удалось загрузить список записей.';
+    return;
+  }
   const list = await res.json();
+  if (!Array.isArray(list)) {
+    recsEmpty.hidden = false;
+    recsEmpty.textContent = 'Некорректный ответ сервера.';
+    return;
+  }
   state.rows = list;
+  // Drop selection for rows that are no longer in the current list.
+  const visible = new Set(list.map((r) => Number(r.id)));
+  for (const id of [...state.selected]) {
+    if (!visible.has(id)) state.selected.delete(id);
+  }
   recs.innerHTML = '';
   recCards.innerHTML = '';
   recsEmpty.hidden = list.length > 0;
-  chkAll.checked = false;
+  if (list.length === 0) recsEmpty.textContent = 'Нет записей по выбранным фильтрам.';
   for (const r of list) {
+    const id = Number(r.id);
     const tr = document.createElement('tr');
-    tr.dataset.id = String(r.id);
+    tr.dataset.id = String(id);
     tr.innerHTML = `
-      <td class="chk"><input type="checkbox" class="rowchk" data-id="${r.id}" /></td>
+      <td class="chk"><input type="checkbox" class="rowchk" data-id="${id}" /></td>
       <td>${escapeHtml(formatRecordedAt(r.recorded_at))}</td>
       <td>${escapeHtml(r.display_name)}</td>
       <td>${escapeHtml(r.file_name)}</td>
       <td>${fmtBytes(r.size_bytes)}</td>
       <td>${actionButtonsHtml()}</td>`;
     bindRowActions(tr, r);
-    tr.querySelector('.rowchk').onchange = updateSelUi;
+    tr.querySelector('.rowchk').onchange = (e) => setSelected(id, e.target.checked);
     recs.appendChild(tr);
 
     const card = document.createElement('div');
     card.className = 'rec-card';
-    card.dataset.id = String(r.id);
+    card.dataset.id = String(id);
     card.innerHTML = `
       <div class="top">
-        <input type="checkbox" class="rowchk" data-id="${r.id}" />
+        <input type="checkbox" class="rowchk" data-id="${id}" />
         <div style="flex:1;min-width:0">
           <div class="title">${escapeHtml(r.file_name)}</div>
           <div class="meta-line">${escapeHtml(formatRecordedAt(r.recorded_at))} · ${escapeHtml(r.display_name)} · ${fmtBytes(r.size_bytes)}</div>
@@ -307,50 +332,66 @@ async function loadRecs(){
       </div>
       ${actionButtonsHtml()}`;
     bindRowActions(card, r);
-    card.querySelector('.rowchk').onchange = () => {
-      syncChecks(r.id, card.querySelector('.rowchk').checked);
-      updateSelUi();
-    };
+    card.querySelector('.rowchk').onchange = (e) => setSelected(id, e.target.checked);
     recCards.appendChild(card);
   }
-  updateSelUi();
-}
-
-function syncChecks(id, checked) {
-  document.querySelectorAll('.rowchk[data-id="' + id + '"]').forEach(el => { el.checked = checked; });
+  paintSelection();
 }
 
 function selectedIds() {
-  const ids = new Set();
-  document.querySelectorAll('.desk-table .rowchk:checked, .rec-cards .rowchk:checked').forEach(el => {
-    ids.add(Number(el.dataset.id));
-  });
-  return [...ids];
+  return [...state.selected].map(Number).filter((id) => Number.isFinite(id));
 }
 
-function updateSelUi() {
+function setSelected(id, checked) {
+  id = Number(id);
+  if (!Number.isFinite(id)) return;
+  if (checked) state.selected.add(id);
+  else state.selected.delete(id);
+  paintSelection();
+}
+
+function selectAllVisible(on) {
+  for (const r of state.rows) {
+    const id = Number(r.id);
+    if (on) state.selected.add(id);
+    else state.selected.delete(id);
+  }
+  paintSelection();
+}
+
+function paintSelection() {
+  document.querySelectorAll('.rowchk[data-id]').forEach((el) => {
+    const id = Number(el.dataset.id);
+    el.checked = state.selected.has(id);
+  });
   const ids = selectedIds();
   selCount.textContent = ids.length ? ('Выбрано: ' + ids.length) : '';
   dlSelected.disabled = ids.length === 0;
   delSelected.disabled = ids.length === 0;
-  const deskBoxes = [...recs.querySelectorAll('.rowchk')];
-  chkAll.checked = deskBoxes.length > 0 && deskBoxes.every(b => b.checked);
+  const visibleIds = state.rows.map((r) => Number(r.id));
+  chkAll.checked =
+    visibleIds.length > 0 && visibleIds.every((id) => state.selected.has(id));
+  chkAll.indeterminate =
+    !chkAll.checked && visibleIds.some((id) => state.selected.has(id));
 }
 
-chkAll.onchange = () => {
-  const on = chkAll.checked;
-  document.querySelectorAll('.rowchk').forEach(b => { b.checked = on; });
-  updateSelUi();
+async function refreshAfterMutation() {
+  await Promise.all([loadStorage(), loadPcs(), loadRecs()]);
+}
+
+chkAll.onchange = () => selectAllVisible(chkAll.checked);
+selAll.onclick = () => selectAllVisible(true);
+selNone.onclick = () => {
+  state.selected.clear();
+  paintSelection();
 };
-selAll.onclick = () => { document.querySelectorAll('.rowchk').forEach(b => { b.checked = true; }); updateSelUi(); };
-selNone.onclick = () => { document.querySelectorAll('.rowchk').forEach(b => { b.checked = false; }); updateSelUi(); };
 
 dlSelected.onclick = async () => {
   const ids = selectedIds();
   for (const id of ids) {
-    const r = state.rows.find(x => x.id === id);
+    const r = state.rows.find((x) => Number(x.id) === id);
     if (r) await downloadOne(r);
-    await new Promise(r => setTimeout(r, 250));
+    await new Promise((resolve) => setTimeout(resolve, 250));
   }
 };
 
@@ -358,28 +399,62 @@ delSelected.onclick = async () => {
   const ids = selectedIds();
   if (!ids.length) return;
   if (!confirm('Удалить выбранные записи (' + ids.length + ' шт.)?')) return;
-  const res = await api('/api/recordings/delete', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ids })
-  });
-  if (!res.ok) { alert('Не удалось удалить'); return; }
-  if (state.currentId && ids.includes(state.currentId)) {
-    playerWrap.hidden = true;
-    state.currentId = null;
+  delSelected.disabled = true;
+  try {
+    const res = await api('/api/recordings/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids })
+    });
+    if (!res.ok) {
+      alert('Не удалось удалить выбранные записи (HTTP ' + res.status + ')');
+      return;
+    }
+    const data = await res.json().catch(() => ({}));
+    const deletedIds = Array.isArray(data.deleted_ids)
+      ? data.deleted_ids.map(Number)
+      : ids;
+    for (const id of deletedIds) state.selected.delete(id);
+    if (state.currentId != null && deletedIds.includes(Number(state.currentId))) {
+      playerWrap.hidden = true;
+      state.currentId = null;
+      player.removeAttribute('src');
+      while (player.firstChild) player.removeChild(player.firstChild);
+      player.load();
+    }
+    await refreshAfterMutation();
+    const missing = Array.isArray(data.missing_ids) ? data.missing_ids.length : 0;
+    if (missing > 0) {
+      alert('Удалено: ' + (data.deleted || deletedIds.length) + '. Не найдено на сервере: ' + missing);
+    }
+  } catch (err) {
+    alert('Ошибка удаления: ' + (err && err.message ? err.message : err));
+  } finally {
+    paintSelection();
   }
-  loadStorage(); loadPcs(); loadRecs();
 };
 
 async function deleteOne(r) {
   if (!confirm('Удалить запись «' + r.file_name + '»?')) return;
-  const res = await api('/api/recordings/' + r.id, { method: 'DELETE' });
-  if (!res.ok) { alert('Не удалось удалить'); return; }
-  if (state.currentId === r.id) {
-    playerWrap.hidden = true;
-    state.currentId = null;
+  const id = Number(r.id);
+  try {
+    const res = await api('/api/recordings/' + id, { method: 'DELETE' });
+    if (!res.ok) {
+      alert('Не удалось удалить (HTTP ' + res.status + ')');
+      return;
+    }
+    state.selected.delete(id);
+    if (Number(state.currentId) === id) {
+      playerWrap.hidden = true;
+      state.currentId = null;
+      player.removeAttribute('src');
+      while (player.firstChild) player.removeChild(player.firstChild);
+      player.load();
+    }
+    await refreshAfterMutation();
+  } catch (err) {
+    alert('Ошибка удаления: ' + (err && err.message ? err.message : err));
   }
-  loadStorage(); loadPcs(); loadRecs();
 }
 
 deleteCurrent.onclick = () => {
