@@ -24,10 +24,13 @@ hidden-screen-recorder-master/
 └── Cargo.toml                # Workspace: приложение + server
 ```
 
-Сборка поставки: `packaging/windows/pack-office-recorder.ps1` → `target/OfficeRecorder/`:
+Поставка:
 
-- корень: агент/консоль + `bin\`
-- `ArchiveServer\`: только сервер (BAT + exe)
-- `UbuntuVPS\`: скрипты Linux
+- **Офисный ПК (лёгкий):** `packaging/windows/pack-office-pc.ps1` → `target/OfficePC/`  
+  (консоль + агент, ~15 МБ; без сервера и Ubuntu)
+- **Полный комплект:** `packaging/windows/pack-office-recorder.ps1` → `target/OfficeRecorder/`  
+  (агент + `ArchiveServer\` + `UbuntuVPS\`)
+- **Очистка кэша сборки (~ГБ):** `packaging/windows/Clean-Build.ps1`  
+  (`target/debug` и `target/release` — это кэш Cargo, не часть продукта)
 
 Артефакты `target/` в git не входят.

@@ -30,12 +30,11 @@ enum AgentPhase {
 }
 
 pub fn run() -> Result<(), String> {
-    // Stop-Agent.bat sets this so Run/autostart/watchdog cannot revive the agent.
+    // Stop-Agent.bat / console Stop sets this so Run/watchdog cannot revive the agent.
+    // Exit quietly (ok) — not a crash; watchdog must not treat this as failure restart noise.
     if admin_stopped() {
-        return Err(
-            "Agent was stopped by admin (agent.admin-stopped). Use Start-Agent.bat to run again."
-                .into(),
-        );
+        debug_log::write("recorder-agent skipped: agent.admin-stopped present");
+        return Ok(());
     }
 
     let (mut config, warning) = AppConfig::load().unwrap_or_else(|error| {
@@ -91,10 +90,14 @@ pub fn run() -> Result<(), String> {
     loop {
         pump_windows_messages();
 
-        if stop_request_pending() {
+        if admin_stopped() || stop_request_pending() {
             if !shutdown_requested {
-                debug_log::write("agent: stop requested via Stop-Agent.bat");
+                debug_log::write("agent: stop requested (Stop-Agent / console / admin-stopped)");
                 shutdown_requested = true;
+                // Ensure both flags so watchdog stays off even if only one was written.
+                if let Some(path) = admin_stopped_flag_path() {
+                    let _ = std::fs::write(path, b"1\n");
+                }
             }
             if matches!(phase, AgentPhase::Recording) {
                 request_stop(&mut recorder, &mut phase, &stop_signal);

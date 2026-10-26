@@ -18,7 +18,6 @@ use eframe::egui::{
     Vec2, ViewportCommand, WindowLevel,
 };
 use windows::Win32::Foundation::HWND;
-use windows::core::w;
 use windows_capture::monitor::Monitor;
 
 use crate::{
@@ -29,9 +28,16 @@ use crate::{
     recorder::{RecorderEvent, RecorderManager},
 };
 
-pub const WINDOW_TITLE: &str = "Office Recorder — Console";
-pub const WINDOW_SIZE: Vec2 = Vec2::new(1100.0, 720.0);
-pub const MIN_WINDOW_SIZE: Vec2 = Vec2::new(1000.0, 640.0);
+pub const WINDOW_TITLE: &str = "Office Recorder";
+pub const WINDOW_SIZE: Vec2 = Vec2::new(1080.0, 700.0);
+pub const MIN_WINDOW_SIZE: Vec2 = Vec2::new(960.0, 620.0);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PanelTab {
+    Control,
+    Capture,
+    Archive,
+}
 
 type MicrophoneScan = Result<audio::MicrophoneScan, String>;
 
@@ -125,6 +131,8 @@ pub struct HiddenScreenRecorderApp {
     audio_levels: [f32; 2],
     last_park_refresh: Instant,
     archive_test_message: Option<String>,
+    panel_tab: PanelTab,
+    agent_action_message: Option<String>,
 }
 
 impl HiddenScreenRecorderApp {
@@ -200,6 +208,8 @@ impl HiddenScreenRecorderApp {
             audio_levels: [0.0; 2],
             last_park_refresh: Instant::now(),
             archive_test_message: None,
+            panel_tab: PanelTab::Control,
+            agent_action_message: None,
         };
         app.refresh_microphones(&cc.egui_ctx);
         app
@@ -831,6 +841,137 @@ impl HiddenScreenRecorderApp {
         button.on_hover_text(language.text("Microphone filters", "Фильтры микрофона"));
     }
 
+    fn render_agent_control_card(&mut self, ui: &mut egui::Ui) {
+        let language = self.config.language();
+        let running = crate::session::agent_process_running();
+        let admin_stopped = crate::autostart::admin_stopped();
+        let (status_text, status_color) = if running {
+            (
+                language.text("Running", "Работает"),
+                Color32::from_rgb(46, 160, 110),
+            )
+        } else if admin_stopped {
+            (
+                language.text("Stopped by admin", "Остановлен админом"),
+                Color32::from_rgb(200, 140, 60),
+            )
+        } else {
+            (
+                language.text("Stopped", "Остановлен"),
+                MUTED,
+            )
+        };
+
+        settings_card(ui, 0.0, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(language.text("Agent", "Агент"))
+                        .size(15.0)
+                        .strong()
+                        .color(TEXT),
+                );
+                ui.add_space(8.0);
+                ui.label(RichText::new("●").color(status_color));
+                ui.label(RichText::new(status_text).size(13.0).color(status_color));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(
+                        RichText::new(format!("PC: {}", self.config.effective_pc_id()))
+                            .size(11.0)
+                            .color(MUTED),
+                    );
+                });
+            });
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let start_label = language.text("Start agent", "Запустить агент");
+                if ui
+                    .add_enabled(
+                        !running,
+                        Button::new(RichText::new(start_label).strong())
+                            .fill(ACCENT)
+                            .min_size(Vec2::new(150.0, 34.0)),
+                    )
+                    .clicked()
+                {
+                    self.save_config();
+                    match crate::autostart::launch_agent() {
+                        Ok(()) => {
+                            self.agent_action_message = Some(
+                                language
+                                    .text("Agent started.", "Агент запущен.")
+                                    .into(),
+                            );
+                            self.warning = None;
+                        }
+                        Err(error) => {
+                            self.agent_action_message = None;
+                            self.warning = Some(error);
+                        }
+                    }
+                }
+                let stop_label = language.text("Stop agent", "Остановить агент");
+                if ui
+                    .add_enabled(
+                        running || admin_stopped,
+                        Button::new(RichText::new(stop_label).strong())
+                            .fill(Color32::from_rgb(180, 70, 70))
+                            .min_size(Vec2::new(150.0, 34.0)),
+                    )
+                    .clicked()
+                {
+                    match crate::autostart::stop_agent() {
+                        Ok(()) => {
+                            self.agent_action_message = Some(
+                                language
+                                    .text(
+                                        "Agent stopped (watchdog will not restart).",
+                                        "Агент остановлен (watchdog не поднимет).",
+                                    )
+                                    .into(),
+                            );
+                            self.warning = None;
+                        }
+                        Err(error) => {
+                            self.agent_action_message = None;
+                            self.warning = Some(error);
+                        }
+                    }
+                }
+            });
+            ui.add_space(6.0);
+            let mut autostart = self.config.agent_autostart;
+            if toggle_row(
+                ui,
+                language.text("Start at Windows logon", "Запуск при входе в Windows"),
+                &mut autostart,
+            )
+            .changed()
+            {
+                let result = if autostart {
+                    crate::autostart::enable()
+                } else {
+                    crate::autostart::disable()
+                };
+                match result {
+                    Ok(()) => {
+                        self.config.agent_autostart = autostart;
+                        self.save_config();
+                    }
+                    Err(error) => self.warning = Some(error),
+                }
+            }
+            toggle_row(
+                ui,
+                language.text("Agent auto-record", "Автозапись агента"),
+                &mut self.config.agent_auto_record,
+            );
+            if let Some(msg) = &self.agent_action_message {
+                ui.add_space(4.0);
+                ui.label(RichText::new(msg).size(11.0).color(Color32::from_rgb(46, 160, 110)));
+            }
+        });
+    }
+
     fn render_idle(&mut self, ctx: &egui::Context) {
         let language = self.config.language();
         let idle = matches!(self.state, AppState::Idle);
@@ -864,7 +1005,6 @@ impl HiddenScreenRecorderApp {
                         && self.hotkey_error.is_none());
                 if ui
                     .add_enabled_ui(enabled, |ui| {
-                        // add_sized centers the button contents in both axes.
                         ui.add_sized(
                             [available_width, 46.0],
                             Button::new(RichText::new(label).size(16.0).strong())
@@ -882,37 +1022,117 @@ impl HiddenScreenRecorderApp {
                     }
                 }
             });
+
+        egui::SidePanel::left("nav")
+            .exact_width(168.0)
+            .frame(
+                Frame::new()
+                    .fill(SURFACE)
+                    .inner_margin(Margin::symmetric(12, 16))
+                    .stroke(Stroke::new(1.0_f32, BORDER)),
+            )
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new(WINDOW_TITLE)
+                        .size(16.0)
+                        .strong()
+                        .color(TEXT),
+                );
+                ui.label(
+                    RichText::new(language.text("Control panel", "Панель управления"))
+                        .size(11.0)
+                        .color(MUTED),
+                );
+                ui.add_space(14.0);
+                for (tab, en, ru) in [
+                    (PanelTab::Control, "Control", "Управление"),
+                    (PanelTab::Capture, "Capture", "Запись"),
+                    (PanelTab::Archive, "Archive", "Архив"),
+                ] {
+                    let selected = self.panel_tab == tab;
+                    let fill = if selected {
+                        ACCENT
+                    } else {
+                        Color32::TRANSPARENT
+                    };
+                    if ui
+                        .add_sized(
+                            [ui.available_width(), 34.0],
+                            Button::new(RichText::new(language.text(en, ru)).color(TEXT))
+                                .fill(fill)
+                                .corner_radius(8.0),
+                        )
+                        .clicked()
+                    {
+                        self.panel_tab = tab;
+                    }
+                    ui.add_space(4.0);
+                }
+                ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
+                    ui.add_space(8.0);
+                    if ui
+                        .add_sized([ui.available_width(), 28.0], Button::new("EN / RU"))
+                        .clicked()
+                    {
+                        self.config.language = Some(language.toggled());
+                        self.monitors = enumerate_monitors(self.config.language());
+                        self.save_config();
+                    }
+                });
+            });
+
         egui::CentralPanel::default()
-            .frame(Frame::new().fill(BACKGROUND).inner_margin(Margin::symmetric(28, 22)))
+            .frame(Frame::new().fill(BACKGROUND).inner_margin(Margin::symmetric(22, 18)))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.label(RichText::new(WINDOW_TITLE).size(28.0).strong().color(TEXT));
-                    });
+                    let title = match self.panel_tab {
+                        PanelTab::Control => language.text("Control", "Управление"),
+                        PanelTab::Capture => language.text("Capture", "Запись"),
+                        PanelTab::Archive => language.text("Archive", "Архив"),
+                    };
+                    ui.label(RichText::new(title).size(22.0).strong().color(TEXT));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        github_button(ui);
-                        if ui.add_sized([66.0, 28.0], Button::new(language.text("EN / RU", "RU / EN")))
-                            .on_hover_text(language.text("Switch to Russian", "Переключить на английский")).clicked() {
-                            self.config.language = Some(language.toggled());
-                            self.monitors = enumerate_monitors(self.config.language());
-                            self.save_config();
-                            ctx.request_repaint();
-                        }
                         if let Some(path) = &self.last_output
-                            && ui.link(language.text("Last recording", "Последняя запись")).clicked() {
+                            && ui
+                                .link(language.text("Last recording", "Последняя запись"))
+                                .clicked()
+                        {
                             let _ = Command::new("explorer.exe")
-                                .arg(format!("/select,{}", path.display())).spawn();
+                                .arg(format!("/select,{}", path.display()))
+                                .spawn();
                         }
                     });
                 });
-                ui.add_space(20.0);
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                    ui.set_min_width(ui.available_width());
-                    ui.add_enabled_ui(idle, |ui| {
-                        let card_height = (ui.available_height() - 24.0).clamp(0.0, 420.0);
-                        ui.columns(2, |columns| {
-                        let ui = &mut columns[0];
-                        settings_card(ui, card_height, |ui| {
+                ui.add_space(12.0);
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        match self.panel_tab {
+                            PanelTab::Control => {
+                                self.render_agent_control_card(ui);
+                                ui.add_space(12.0);
+                                ui.add_enabled_ui(idle, |ui| {
+                                    settings_card(ui, 0.0, |ui| {
+                                        self.render_control_schedule(ui);
+                                    });
+                                    ui.add_space(12.0);
+                                    settings_card(ui, 0.0, |ui| {
+                                        section_title(
+                                            ui,
+                                            language.text("App & storage", "Приложение и сохранение"),
+                                        );
+                                        self.render_storage_settings(ui);
+                                    });
+                                });
+                            }
+                            PanelTab::Capture => {
+                                ui.add_enabled_ui(idle, |ui| {
+                                    let card_height =
+                                        (ui.available_height() - 12.0).clamp(200.0, 520.0);
+                                    ui.columns(2, |columns| {
+                                        let ui = &mut columns[0];
+                                        settings_card(ui, card_height, |ui| {
                             ui.spacing_mut().item_spacing.y = 4.0;
                             ui.spacing_mut().button_padding.y = 5.0;
                             ui.horizontal(|ui| {
@@ -1109,90 +1329,146 @@ impl HiddenScreenRecorderApp {
                             }
 
                         });
-                        let ui = &mut columns[1];
-                        let invalid_shortcut = self.hotkey_error.is_some();
-                        settings_card_state(ui, invalid_shortcut, card_height, |ui| {
-                            ui.spacing_mut().item_spacing.y = 4.0;
-                            ui.spacing_mut().button_padding.y = 5.0;
-                            section_title(ui, language.text("App & storage", "Приложение и сохранение"));
-                            row(ui, language.text("Duration", "Длительность"), |ui| {
-                                integer_slider(ui, &mut self.config.duration_minutes, 0..=1440, language.text(" min", " мин"), true);
-                            });
-                            row(ui, language.text("Save location", "Папка записи"), |ui| {
-                                let path = self.config.output_dir.to_string_lossy();
-                                let path_width = (ui.available_width() - VALUE_WIDTH - ui.spacing().item_spacing.x).max(50.0);
-                                ui.add_sized([path_width, CONTROL_HEIGHT], egui::Label::new(RichText::new(path.as_ref()).size(12.0).color(MUTED)).truncate().halign(Align::Min))
-                                    .on_hover_text(path.as_ref());
-                                if ui.add_sized([VALUE_WIDTH, CONTROL_HEIGHT], Button::new(language.text("Browse", "Выбрать"))).clicked()
-                                    && let Some(folder) = rfd::FileDialog::new()
-                                        .set_directory(&self.config.output_dir).pick_folder() {
-                                    self.config.output_dir = folder;
-                                }
-                            });
-                            row(ui, language.text("Filename", "Имя файла"), |ui| {
-                                let width = (ui.available_width() - CONTROL_HEIGHT - ui.spacing().item_spacing.x).max(80.0);
-                                let now = chrono::Local::now().naive_local();
-                                let example = format!("{}.mp4", crate::filename::render_with_pc(&self.config.filename_template, now, self.config.monitor_index, &self.config.effective_pc_id()));
-                                let field = ui.add_sized([width, CONTROL_HEIGHT], egui::TextEdit::singleline(&mut self.config.filename_template)
-                                    .horizontal_align(Align::Center)
-                                    .vertical_align(Align::Center)
-                                    .char_limit(120)
-                                    .hint_text(crate::filename::DEFAULT_TEMPLATE))
-                                    .on_hover_text(format!("{}: {example}", language.text("Example", "Пример")));
-                                let (help_rect, help) = ui.allocate_exact_size(
-                                    Vec2::new(CONTROL_HEIGHT, CONTROL_HEIGHT), egui::Sense::hover());
-                                ui.painter().text(
-                                    egui::pos2(help_rect.center().x, field.rect.center().y),
-                                    egui::Align2::CENTER_CENTER, "?", egui::FontId::proportional(13.0),
-                                    if help.hovered() { TEXT } else { MUTED });
-                                help.on_hover_ui(|ui| {
-                                        ui.set_max_width(380.0);
-                                        ui.strong(language.text("Filename variables", "Переменные имени файла"));
-                                        egui::Grid::new("filename_variables").num_columns(3).show(ui, |ui| {
-                                            for (tag, format, en, ru) in crate::filename::VARIABLES {
-                                                ui.monospace(tag);
-                                                ui.label(language.text(en, ru));
-                                                ui.monospace(now.format(format).to_string());
-                                                ui.end_row();
-                                            }
-                                            ui.monospace("{monitor}");
-                                            ui.label(language.text("Display number", "Номер экрана"));
-                                            ui.monospace(self.config.monitor_index.to_string());
-                                            ui.end_row();
-                                            ui.monospace("{pc}");
-                                            ui.label(language.text("PC id / hostname", "ID ПК / имя хоста"));
-                                            ui.monospace(self.config.effective_pc_id());
-                                            ui.end_row();
+                                        let ui = &mut columns[1];
+                                        let invalid_shortcut = self.hotkey_error.is_some();
+                                        settings_card_state(ui, invalid_shortcut, card_height, |ui| {
+                                            ui.spacing_mut().item_spacing.y = 4.0;
+                                            self.render_hotkey_settings(ui);
                                         });
-                                        ui.separator();
-                                        ui.label(language.text("Local time at recording start. The .mp4 extension is added automatically; duplicate names get _1, _2, … . Unsupported characters become _; unknown tags stay as text.", "Местное время начала записи. Расширение .mp4 добавляется автоматически; при совпадении имён — _1, _2, … . Недопустимые символы заменяются на _; неизвестные теги остаются текстом."));
-                                        ui.label(format!("{}: {example}", language.text("Example", "Пример")));
                                     });
-                            });
-                            ui.add_space(5.0);
-                            ui.separator();
-                            ui.add_space(5.0);
-                            toggle_row(ui, language.text("Hide window while recording", "Скрывать окно при записи"), &mut self.config.hide_window)
-                                .on_hover_text(language.text("Hide the window and taskbar icon while recording.", "Скрывает окно и значок на панели задач во время записи."));
-                            ui.add_space(3.0);
-                            if toggle_row(ui, language.text("Diagnostic logs", "Журнал диагностики"), &mut self.config.logging_enabled)
-                                .on_hover_text(language.text("Write hidden-screen-recorder-debug.log next to the app. Disabled by default.", "Файл hidden-screen-recorder-debug.log рядом с программой. По умолчанию выключено.")).changed() {
-                                debug_log::set_enabled(self.config.logging_enabled);
-                                debug_log::write("diagnostic logging enabled");
+                                });
                             }
-                            ui.add_space(8.0);
-                            ui.separator();
-                            ui.add_space(6.0);
-                            self.render_hotkey_settings(ui);
-                            ui.add_space(8.0);
-                            ui.separator();
-                            ui.add_space(6.0);
-                            self.render_platform_settings(ui);
-                        });
-                        });
+                            PanelTab::Archive => {
+                                ui.add_enabled_ui(idle, |ui| {
+                                    settings_card(ui, 0.0, |ui| {
+                                        self.render_platform_settings(ui);
+                                    });
+                                });
+                            }
+                        }
                     });
-                });
             });
+    }
+
+    fn render_control_schedule(&mut self, ui: &mut egui::Ui) {
+        let language = self.config.language();
+        section_title(ui, language.text("Schedule & power", "Расписание и питание"));
+        toggle_row(
+            ui,
+            language.text("Stop on sleep", "Стоп при сне"),
+            &mut self.config.stop_on_sleep,
+        );
+        toggle_row(
+            ui,
+            language.text("Record on wake", "Запись после пробуждения"),
+            &mut self.config.record_on_wake,
+        );
+        toggle_row(
+            ui,
+            language.text("Recording schedule", "Расписание записи"),
+            &mut self.config.schedule.enabled,
+        );
+        if self.config.schedule.enabled {
+            let mut start_h = self.config.schedule.start_minutes / 60;
+            let mut start_m = self.config.schedule.start_minutes % 60;
+            let mut end_h = self.config.schedule.end_minutes / 60;
+            let mut end_m = self.config.schedule.end_minutes % 60;
+            row(ui, language.text("From", "С"), |ui| {
+                ui.add(egui::DragValue::new(&mut start_h).range(0..=23).suffix("h"));
+                ui.add(egui::DragValue::new(&mut start_m).range(0..=59).suffix("m"));
+            });
+            row(ui, language.text("To", "До"), |ui| {
+                ui.add(egui::DragValue::new(&mut end_h).range(0..=23).suffix("h"));
+                ui.add(egui::DragValue::new(&mut end_m).range(0..=59).suffix("m"));
+            });
+            self.config.schedule.start_minutes = start_h * 60 + start_m;
+            self.config.schedule.end_minutes = end_h * 60 + end_m;
+        }
+        row(
+            ui,
+            language.text("Max recording sessions", "Макс. сессий записи"),
+            |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut self.config.max_recording_sessions)
+                        .range(1..=8)
+                        .speed(0.05),
+                );
+            },
+        );
+    }
+
+    fn render_storage_settings(&mut self, ui: &mut egui::Ui) {
+        let language = self.config.language();
+        row(ui, language.text("Duration", "Длительность"), |ui| {
+            integer_slider(
+                ui,
+                &mut self.config.duration_minutes,
+                0..=1440,
+                language.text(" min", " мин"),
+                true,
+            );
+        });
+        row(ui, language.text("Save location", "Папка записи"), |ui| {
+            let path = self.config.output_dir.to_string_lossy();
+            let path_width =
+                (ui.available_width() - VALUE_WIDTH - ui.spacing().item_spacing.x).max(50.0);
+            ui.add_sized(
+                [path_width, CONTROL_HEIGHT],
+                egui::Label::new(RichText::new(path.as_ref()).size(12.0).color(MUTED))
+                    .truncate()
+                    .halign(Align::Min),
+            )
+            .on_hover_text(path.as_ref());
+            if ui
+                .add_sized(
+                    [VALUE_WIDTH, CONTROL_HEIGHT],
+                    Button::new(language.text("Browse", "Выбрать")),
+                )
+                .clicked()
+                && let Some(folder) = rfd::FileDialog::new()
+                    .set_directory(&self.config.output_dir)
+                    .pick_folder()
+            {
+                self.config.output_dir = folder;
+            }
+        });
+        row(ui, language.text("Filename", "Имя файла"), |ui| {
+            let width =
+                (ui.available_width() - CONTROL_HEIGHT - ui.spacing().item_spacing.x).max(80.0);
+            let now = chrono::Local::now().naive_local();
+            let example = format!(
+                "{}.mp4",
+                crate::filename::render_with_pc(
+                    &self.config.filename_template,
+                    now,
+                    self.config.monitor_index,
+                    &self.config.effective_pc_id()
+                )
+            );
+            ui.add_sized(
+                [width, CONTROL_HEIGHT],
+                egui::TextEdit::singleline(&mut self.config.filename_template)
+                    .horizontal_align(Align::Center)
+                    .vertical_align(Align::Center)
+                    .char_limit(120)
+                    .hint_text(crate::filename::DEFAULT_TEMPLATE),
+            )
+            .on_hover_text(format!("{}: {example}", language.text("Example", "Пример")));
+        });
+        toggle_row(
+            ui,
+            language.text("Hide window while recording", "Скрывать окно при записи"),
+            &mut self.config.hide_window,
+        );
+        if toggle_row(
+            ui,
+            language.text("Diagnostic logs", "Журнал диагностики"),
+            &mut self.config.logging_enabled,
+        )
+        .changed()
+        {
+            debug_log::set_enabled(self.config.logging_enabled);
+        }
     }
 
     fn render_platform_settings(&mut self, ui: &mut egui::Ui) {
@@ -1438,133 +1714,6 @@ impl HiddenScreenRecorderApp {
                     .color(MUTED),
             );
         }
-
-        ui.add_space(6.0);
-        section_title(ui, language.text("Office agent", "Офисный агент"));
-        ui.label(
-            RichText::new(language.text(
-                "Agent stays visible in the notification area while recording.",
-                "Агент всегда виден в области уведомлений во время работы.",
-            ))
-            .size(11.0)
-            .color(MUTED),
-        );
-        ui.add_space(4.0);
-
-        ui.add_space(4.0);
-        toggle_row(
-            ui,
-            language.text("Agent auto-record", "Автозапись агента"),
-            &mut self.config.agent_auto_record,
-        )
-        .on_hover_text(language.text(
-            "When enabled, the tray agent starts recording on its own (schedule + wake).",
-            "Если включено, агент в трее сам начинает запись (расписание + пробуждение).",
-        ));
-        toggle_row(
-            ui,
-            language.text("Stop on sleep", "Стоп при сне"),
-            &mut self.config.stop_on_sleep,
-        );
-        toggle_row(
-            ui,
-            language.text("Record on wake", "Запись после пробуждения"),
-            &mut self.config.record_on_wake,
-        );
-
-        toggle_row(
-            ui,
-            language.text("Recording schedule", "Расписание записи"),
-            &mut self.config.schedule.enabled,
-        );
-        if self.config.schedule.enabled {
-            let mut start_h = self.config.schedule.start_minutes / 60;
-            let mut start_m = self.config.schedule.start_minutes % 60;
-            let mut end_h = self.config.schedule.end_minutes / 60;
-            let mut end_m = self.config.schedule.end_minutes % 60;
-            row(ui, language.text("From", "С"), |ui| {
-                ui.add(egui::DragValue::new(&mut start_h).range(0..=23).suffix("h"));
-                ui.add(egui::DragValue::new(&mut start_m).range(0..=59).suffix("m"));
-            });
-            row(ui, language.text("To", "До"), |ui| {
-                ui.add(egui::DragValue::new(&mut end_h).range(0..=23).suffix("h"));
-                ui.add(egui::DragValue::new(&mut end_m).range(0..=59).suffix("m"));
-            });
-            self.config.schedule.start_minutes = start_h * 60 + start_m;
-            self.config.schedule.end_minutes = end_h * 60 + end_m;
-        }
-
-        ui.add_space(4.0);
-        let mut autostart = self.config.agent_autostart;
-        if toggle_row(
-            ui,
-            language.text("Start agent at logon", "Агент при входе в Windows"),
-            &mut autostart,
-        )
-        .on_hover_text(language.text(
-            "Adds the agent to the current user's Startup apps (HKCU Run).",
-            "Добавляет агент в автозагрузку текущего пользователя (HKCU Run).",
-        ))
-        .changed()
-        {
-            let result = if autostart {
-                crate::autostart::enable()
-            } else {
-                crate::autostart::disable()
-            };
-            match result {
-                Ok(()) => {
-                    self.config.agent_autostart = autostart;
-                    self.save_config();
-                }
-                Err(error) => {
-                    self.warning = Some(error);
-                }
-            }
-        } else if autostart != self.config.agent_autostart {
-            self.config.agent_autostart = autostart;
-        }
-
-        row(
-            ui,
-            language.text("Max recording sessions", "Макс. сессий записи"),
-            |ui| {
-                ui.add(
-                    egui::DragValue::new(&mut self.config.max_recording_sessions)
-                        .range(1..=8)
-                        .speed(0.05),
-                )
-                .on_hover_text(language.text(
-                    "Blocks extra parallel recordings across the console and agent (default 1).",
-                    "Блокирует лишние параллельные записи консоли и агента (по умолчанию 1).",
-                ));
-            },
-        );
-
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            if ui
-                .add_sized(
-                    [180.0, CONTROL_HEIGHT],
-                    Button::new(language.text("Launch agent", "Запустить агент")),
-                )
-                .clicked()
-            {
-                self.save_config();
-                if let Err(error) = crate::autostart::launch_agent() {
-                    self.warning = Some(error);
-                }
-            }
-            ui.label(
-                RichText::new(format!(
-                    "{}: {}",
-                    language.text("Effective PC id", "Текущий ID ПК"),
-                    self.config.effective_pc_id()
-                ))
-                .size(12.0)
-                .color(MUTED),
-            );
-        });
     }
 
     fn render_status_bar(&self, ctx: &egui::Context) {
@@ -1707,13 +1856,13 @@ fn enumerate_monitors(language: Language) -> Vec<MonitorInfo> {
     result
 }
 
-const BACKGROUND: Color32 = Color32::from_rgb(20, 20, 22);
-const SURFACE: Color32 = Color32::from_rgb(30, 30, 33);
-const BORDER: Color32 = Color32::from_rgb(49, 49, 53);
-const TEXT: Color32 = Color32::from_rgb(239, 239, 242);
-const MUTED: Color32 = Color32::from_rgb(151, 151, 160);
-const ERROR: Color32 = Color32::from_rgb(245, 85, 96);
-const ACCENT: Color32 = Color32::from_rgb(10, 115, 235);
+const BACKGROUND: Color32 = Color32::from_rgb(18, 22, 26);
+const SURFACE: Color32 = Color32::from_rgb(28, 34, 40);
+const BORDER: Color32 = Color32::from_rgb(48, 58, 68);
+const TEXT: Color32 = Color32::from_rgb(236, 240, 244);
+const MUTED: Color32 = Color32::from_rgb(140, 152, 164);
+const ERROR: Color32 = Color32::from_rgb(232, 90, 90);
+const ACCENT: Color32 = Color32::from_rgb(20, 148, 136);
 const LABEL_WIDTH: f32 = 140.0;
 const VALUE_WIDTH: f32 = 96.0;
 const CONTROL_HEIGHT: f32 = 28.0;
@@ -1967,46 +2116,6 @@ fn toggle(ui: &mut egui::Ui, value: &mut bool, label: &str) -> egui::Response {
         );
     }
     response
-}
-
-fn github_button(ui: &mut egui::Ui) {
-    let id = egui::Id::new("github_texture");
-    let cached = ui
-        .ctx()
-        .data(|data| data.get_temp::<egui::TextureHandle>(id));
-    let texture = cached.unwrap_or_else(|| {
-        let texture = ui.ctx().load_texture(
-            "github",
-            egui::ColorImage::from_rgba_unmultiplied(
-                [64, 64],
-                include_bytes!("assets/github.rgba"),
-            ),
-            egui::TextureOptions::LINEAR,
-        );
-        ui.ctx()
-            .data_mut(|data| data.insert_temp(id, texture.clone()));
-        texture
-    });
-    if ui
-        .add(
-            Button::image(egui::Image::new(&texture).fit_to_exact_size(Vec2::splat(22.0)))
-                .frame(false)
-                .min_size(Vec2::splat(34.0)),
-        )
-        .on_hover_text("GitHub · brevzor/hidden-screen-recorder")
-        .clicked()
-    {
-        unsafe {
-            windows::Win32::UI::Shell::ShellExecuteW(
-                None,
-                w!("open"),
-                w!("https://github.com/brevzor/hidden-screen-recorder"),
-                None,
-                None,
-                windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL,
-            );
-        }
-    }
 }
 
 fn warning_box(ui: &mut egui::Ui, text: &str, language: Language) -> bool {

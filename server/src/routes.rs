@@ -126,6 +126,115 @@ pub async fn rename_computer(
 }
 
 #[derive(Deserialize)]
+pub struct IdsBody {
+    ids: Vec<i64>,
+}
+
+/// DELETE /api/recordings/{id} — one recording (file + DB).
+pub async fn delete_recording(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<i64>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    require_admin(&state, &headers)?;
+    let deleted = delete_recording_files(&state, &[id]).await?;
+    Ok(Json(serde_json::json!({ "deleted": deleted })))
+}
+
+/// POST /api/recordings/delete — batch delete by ids.
+pub async fn delete_recordings_batch(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<IdsBody>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    require_admin(&state, &headers)?;
+    if body.ids.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if body.ids.len() > 500 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let deleted = delete_recording_files(&state, &body.ids).await?;
+    Ok(Json(serde_json::json!({ "deleted": deleted })))
+}
+
+async fn delete_recording_files(state: &AppState, ids: &[i64]) -> Result<usize, StatusCode> {
+    let rows = state
+        .db
+        .recordings_by_ids(ids)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let mut deleted = 0usize;
+    for row in rows {
+        if let Some(abs) = safe_join(&state.cfg.archive_dir, &row.relative_path) {
+            let _ = tokio::fs::remove_file(&abs).await;
+            // Best-effort: remove empty parent day/month dirs.
+            if let Some(parent) = abs.parent() {
+                let _ = tokio::fs::remove_dir(parent).await;
+            }
+        }
+        if state.db.delete_recording_row(row.id).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?.is_some() {
+            deleted += 1;
+        }
+    }
+    Ok(deleted)
+}
+
+/// DELETE /api/computers/{pc_id} — wipe all recordings for a workplace + DB rows.
+pub async fn delete_computer_archive(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    AxumPath(pc_id): AxumPath<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    require_admin(&state, &headers)?;
+    if pc_id.trim().is_empty() || pc_id.contains("..") || pc_id.contains('/') || pc_id.contains('\\') {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let rows = state
+        .db
+        .list_recording_paths_for_pc(&pc_id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let count = rows.len();
+    for row in &rows {
+        if let Some(abs) = safe_join(&state.cfg.archive_dir, &row.relative_path) {
+            let _ = tokio::fs::remove_file(&abs).await;
+        }
+    }
+    // Remove PC folder under archive if present.
+    let pc_dir = state.cfg.archive_dir.join(&pc_id);
+    if pc_dir.is_dir() && pc_dir.starts_with(&state.cfg.archive_dir) {
+        let _ = tokio::fs::remove_dir_all(&pc_dir).await;
+    }
+    state
+        .db
+        .delete_computer_and_recordings(&pc_id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(serde_json::json!({ "deleted_recordings": count, "pc_id": pc_id })))
+}
+
+/// GET /api/storage — disk usage for the archive volume.
+pub async fn storage_info(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    require_admin(&state, &headers)?;
+    let path = state.cfg.archive_dir.clone();
+    let (total, available) = tokio::task::spawn_blocking(move || -> Result<(u64, u64), String> {
+        let total = fs4::total_space(&path).map_err(|e| e.to_string())?;
+        let available = fs4::available_space(&path).map_err(|e| e.to_string())?;
+        Ok((total, available))
+    })
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let used = total.saturating_sub(available);
+    Ok(Json(serde_json::json!({
+        "total_bytes": total,
+        "used_bytes": used,
+        "free_bytes": available,
+    })))
+}
+
+#[derive(Deserialize)]
 pub struct MediaQuery {
     access_token: Option<String>,
 }

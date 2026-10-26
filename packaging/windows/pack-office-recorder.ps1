@@ -24,6 +24,15 @@ Copy-Item (Join-Path $Root "target\release\archive-server.exe") $Bin
 Copy-Item (Join-Path $Root "LICENSE") $Dist
 Copy-Item (Join-Path $Root "THIRD_PARTY_NOTICES.txt") $Dist -ErrorAction SilentlyContinue
 
+# FFmpeg HEVC (libx265) next to agent/console
+& (Join-Path $PSScriptRoot "Ensure-FFmpeg.ps1") | Out-Null
+$Ffmpeg = Join-Path $Root "third_party\ffmpeg\bin\ffmpeg.exe"
+if (-not (Test-Path $Ffmpeg)) { throw "ffmpeg.exe missing after Ensure-FFmpeg.ps1" }
+Copy-Item -Force $Ffmpeg (Join-Path $Bin "ffmpeg.exe")
+Get-ChildItem (Join-Path $Root "third_party\ffmpeg") -File -ErrorAction SilentlyContinue |
+  Where-Object { $_.Name -match '^(LICENSE|COPYING)' } |
+  ForEach-Object { Copy-Item -Force $_.FullName $Bin }
+
 # Agent / console at package root (no duplicate server BATs here).
 Copy-Item (Join-Path $PSScriptRoot "Start-Console.bat") $Dist
 Copy-Item (Join-Path $PSScriptRoot "Start-Agent.bat") $Dist

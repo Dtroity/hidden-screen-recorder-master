@@ -7,7 +7,7 @@ mod setup_wizard;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use axum::{
-    routing::{get, patch, post},
+    routing::{delete, get, patch, post},
     Router,
 };
 use clap::{Parser, Subcommand};
@@ -131,9 +131,15 @@ async fn run(cfg: ServerConfig) -> Result<(), String> {
     let app = Router::new()
         .route("/", get(routes::index))
         .route("/api/login", post(routes::login))
+        .route("/api/storage", get(routes::storage_info))
         .route("/api/computers", get(routes::list_computers))
-        .route("/api/computers/{pc_id}", patch(routes::rename_computer))
+        .route(
+            "/api/computers/{pc_id}",
+            patch(routes::rename_computer).delete(routes::delete_computer_archive),
+        )
         .route("/api/recordings", get(routes::list_recordings))
+        .route("/api/recordings/delete", post(routes::delete_recordings_batch))
+        .route("/api/recordings/{id}", delete(routes::delete_recording))
         .route("/api/media/{id}", get(routes::media))
         .route("/api/upload", post(routes::upload))
         .with_state(state);

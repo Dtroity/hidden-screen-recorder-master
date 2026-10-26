@@ -148,13 +148,37 @@ pub fn is_enabled() -> bool {
     matches!(read_run_value(), Ok(Some(value)) if !value.trim().is_empty())
 }
 
+fn stop_flag_path() -> Option<PathBuf> {
+    agent_exe_path()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("agent.stop")))
+}
+
+/// Clear Stop-Agent / admin-stop flags so the agent may run again.
+pub fn clear_agent_stop_flags() {
+    if let Some(path) = admin_stopped_flag_path() {
+        let _ = std::fs::remove_file(path);
+    }
+    if let Some(path) = stop_flag_path() {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+pub fn admin_stopped() -> bool {
+    admin_stopped_flag_path().is_some_and(|p| p.is_file())
+}
+
 pub fn launch_agent() -> Result<(), Message> {
-    if crate::session::agent_already_running() {
+    // Always clear admin-stop before spawn — console "Start" is a legitimate start.
+    clear_agent_stop_flags();
+
+    if crate::session::agent_process_running() {
         return Err(msg!(
             "Recorder agent is already running.",
             "Агент записи уже запущен."
         ));
     }
+
     let exe = agent_exe_path()?;
     std::process::Command::new(&exe).spawn().map_err(|error| {
         msg!(
@@ -163,6 +187,51 @@ pub fn launch_agent() -> Result<(), Message> {
             exe.display()
         )
     })?;
+    // Give the process a moment to claim the mutex / fail on leftover flags.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    if !crate::session::agent_process_running() {
+        return Err(msg!(
+            "Agent exited immediately. Check agent.admin-stopped next to recorder-agent.exe, or diagnostic logs.",
+            "Агент сразу завершился. Проверьте agent.admin-stopped рядом с recorder-agent.exe или журнал диагностики."
+        ));
+    }
+    let _ = enable_watchdog_task();
+    Ok(())
+}
+
+/// Graceful stop (flag) then force-kill — same semantics as Stop-Agent.bat.
+pub fn stop_agent() -> Result<(), Message> {
+    let exe = agent_exe_path()?;
+    let dir = exe.parent().ok_or_else(|| {
+        msg!(
+            "Executable directory is unavailable",
+            "Каталог программы недоступен"
+        )
+    })?;
+    let _ = std::fs::write(dir.join("agent.admin-stopped"), b"1\n");
+    let _ = std::fs::write(dir.join("agent.stop"), b"1\n");
+
+    if !crate::session::agent_process_running() {
+        let _ = std::fs::remove_file(dir.join("agent.stop"));
+        return Ok(());
+    }
+
+    for _ in 0..8 {
+        if !crate::session::agent_process_running() {
+            let _ = std::fs::remove_file(dir.join("agent.stop"));
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(400));
+    }
+
+    crate::session::force_kill_agent_processes();
+    let _ = std::fs::remove_file(dir.join("agent.stop"));
+    if crate::session::agent_process_running() {
+        return Err(msg!(
+            "Could not stop recorder-agent.exe. Try Task Manager.",
+            "Не удалось остановить recorder-agent.exe. Закройте в Диспетчере задач."
+        ));
+    }
     Ok(())
 }
 

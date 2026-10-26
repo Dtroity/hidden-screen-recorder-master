@@ -1,8 +1,13 @@
-//! Cross-process limit on concurrent recording sessions.
+//! Cross-process limit on concurrent recording sessions + agent instance checks.
+
+use std::time::Duration;
 
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, WAIT_ABANDONED, WAIT_OBJECT_0,
     WAIT_TIMEOUT,
+};
+use windows::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
 };
 use windows::Win32::System::Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject};
 use windows::core::{HSTRING, PCWSTR};
@@ -13,6 +18,7 @@ use crate::msg;
 const SLOT_PREFIX: &str = "Local\\OfficePC-RecorderSession-";
 pub const AGENT_INSTANCE_MUTEX: &str = "Local\\OfficePC-RecorderAgent-Instance";
 const MAX_SLOTS: u32 = 8;
+const AGENT_IMAGE: &str = "recorder-agent.exe";
 
 /// Held for the lifetime of one recording. Dropping releases the slot.
 pub struct SessionGuard {
@@ -65,7 +71,7 @@ pub fn try_acquire(max_sessions: u32) -> Result<SessionGuard, Message> {
     ))
 }
 
-/// Claim the single-instance lock for the tray agent (held until process exit).
+/// Claim the single-instance lock for the agent (held until process exit).
 pub fn try_claim_agent_instance() -> Result<SessionGuard, Message> {
     let name = HSTRING::from(AGENT_INSTANCE_MUTEX);
     let handle = unsafe { CreateMutexW(None, false, PCWSTR(name.as_ptr())) }.map_err(|error| {
@@ -86,24 +92,55 @@ pub fn try_claim_agent_instance() -> Result<SessionGuard, Message> {
     }
 }
 
-/// Soft check used by the console before spawning another agent process.
+/// True only when a live `recorder-agent.exe` process exists (not a stale mutex).
 pub fn agent_already_running() -> bool {
-    let name = HSTRING::from(AGENT_INSTANCE_MUTEX);
-    let Ok(handle) = (unsafe { CreateMutexW(None, false, PCWSTR(name.as_ptr())) }) else {
-        return false;
-    };
-    let already = unsafe { GetLastError() == ERROR_ALREADY_EXISTS };
-    if !already {
-        let _ = unsafe { CloseHandle(handle) };
-        return false;
+    agent_process_running()
+}
+
+/// Enumerate processes and look for recorder-agent.exe (case-insensitive).
+pub fn agent_process_running() -> bool {
+    unsafe {
+        let snap = match CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) {
+            Ok(h) => h,
+            Err(_) => return false,
+        };
+        let mut entry = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        let mut found = false;
+        if Process32FirstW(snap, &mut entry).is_ok() {
+            loop {
+                let name = String::from_utf16_lossy(
+                    entry
+                        .szExeFile
+                        .iter()
+                        .take_while(|&&c| c != 0)
+                        .copied()
+                        .collect::<Vec<_>>()
+                        .as_slice(),
+                );
+                if name.eq_ignore_ascii_case(AGENT_IMAGE) {
+                    found = true;
+                    break;
+                }
+                if Process32NextW(snap, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(snap);
+        found
     }
-    let wait = unsafe { WaitForSingleObject(handle, 0) };
-    if wait_acquired(wait) {
-        // Abandoned / free — not a live agent.
-        let _ = unsafe { ReleaseMutex(handle) };
-        let _ = unsafe { CloseHandle(handle) };
-        return false;
-    }
-    let _ = unsafe { CloseHandle(handle) };
-    true
+}
+
+/// Force-stop every recorder-agent.exe via taskkill (used after graceful timeout).
+pub fn force_kill_agent_processes() {
+    use std::os::windows::process::CommandExt;
+    let _ = std::process::Command::new("taskkill")
+        .args(["/IM", AGENT_IMAGE, "/F", "/T"])
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW
+        .output();
+    // Brief settle so mutex / handles release.
+    std::thread::sleep(Duration::from_millis(400));
 }

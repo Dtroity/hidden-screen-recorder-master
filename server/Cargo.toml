@@ -25,3 +25,4 @@ tokio-util = { version = "0.7", features = ["io"] }
 toml = "0.8"
 uuid = { version = "1", features = ["v4"] }
 rand = "0.8"
+fs4 = "0.12"

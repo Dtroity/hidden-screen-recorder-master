@@ -5,30 +5,47 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Архив записей</title>
   <style>
-    :root { color-scheme: light; --bg:#f4f5f7; --card:#fff; --text:#1a1a1a; --muted:#667085; --accent:#2563eb; --line:#e4e7ec; }
+    :root { color-scheme: light; --bg:#f4f5f7; --card:#fff; --text:#1a1a1a; --muted:#667085; --accent:#2563eb; --line:#e4e7ec; --danger:#b42318; }
     * { box-sizing: border-box; }
     body { margin:0; font:14px/1.45 system-ui,Segoe UI,sans-serif; background:var(--bg); color:var(--text); }
-    header { background:var(--card); border-bottom:1px solid var(--line); padding:12px 20px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+    header { background:var(--card); border-bottom:1px solid var(--line); padding:10px 20px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
     header h1 { font-size:16px; margin:0; font-weight:600; }
-    main { display:grid; grid-template-columns: 280px 1fr; gap:16px; padding:16px; max-width:1400px; margin:0 auto; }
+    main { display:grid; grid-template-columns: 300px 1fr; gap:16px; padding:16px; max-width:1400px; margin:0 auto; }
     @media (max-width:900px){ main { grid-template-columns:1fr; } }
     .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px; }
     .muted { color:var(--muted); }
     input, button, select { font:inherit; padding:7px 10px; border:1px solid var(--line); border-radius:8px; background:#fff; }
     button { cursor:pointer; background:var(--accent); color:#fff; border-color:var(--accent); }
     button.secondary { background:#fff; color:var(--text); border-color:var(--line); }
+    button.danger { background:#fff; color:var(--danger); border-color:#fecdca; }
+    button.danger:hover { background:#fef3f2; }
+    button:disabled { opacity:.45; cursor:not-allowed; }
     ul { list-style:none; margin:0; padding:0; }
-    li { padding:8px; border-radius:8px; cursor:pointer; }
-    li:hover, li.active { background:#eef4ff; }
+    li.pc { padding:8px; border-radius:8px; display:flex; gap:6px; align-items:flex-start; }
+    li.pc .body { flex:1; cursor:pointer; min-width:0; }
+    li.pc:hover, li.pc.active { background:#eef4ff; }
+    li.pc .icon-btn { flex:0 0 auto; width:28px; height:28px; padding:0; display:inline-flex; align-items:center; justify-content:center; background:#fff; color:var(--muted); border:1px solid var(--line); border-radius:6px; font-size:13px; line-height:1; }
+    li.pc .icon-btn:hover { color:var(--text); border-color:#b0b8c4; }
+    li.pc .icon-btn.trash:hover { color:var(--danger); border-color:#fecdca; }
     table { width:100%; border-collapse:collapse; }
-    th, td { text-align:left; padding:8px; border-bottom:1px solid var(--line); font-size:13px; }
+    th, td { text-align:left; padding:8px; border-bottom:1px solid var(--line); font-size:13px; vertical-align:middle; }
+    th.chk, td.chk { width:36px; }
     video { width:100%; max-height:420px; background:#000; border-radius:8px; }
     #login { max-width:360px; margin:80px auto; }
     .row { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; align-items:center; }
-    .err { color:#b42318; }
+    .err { color:var(--danger); }
     .hint { color:#344054; background:#fff8eb; border:1px solid #f5e0a3; border-radius:8px; padding:10px 12px; margin-top:8px; }
     .empty { padding:16px; color:var(--muted); }
     a.dl { color:var(--accent); }
+    .actions { display:flex; gap:4px; flex-wrap:wrap; }
+    .actions button { padding:5px 8px; font-size:12px; }
+    .storage { display:flex; align-items:center; gap:8px; margin-left:auto; min-width:160px; max-width:240px; }
+    .storage .meta { font-size:11px; color:var(--muted); white-space:nowrap; }
+    .storage .bar { flex:1; height:6px; background:#eef0f4; border-radius:99px; overflow:hidden; min-width:56px; }
+    .storage .bar > i { display:block; height:100%; background:#98a2b3; border-radius:99px; }
+    .storage .bar.high > i { background:#f79009; }
+    .storage .bar.crit > i { background:#f04438; }
+    .toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px; }
   </style>
 </head>
 <body>
@@ -44,12 +61,15 @@
     <header>
       <h1>Архив записей экрана</h1>
       <span class="muted" id="who"></span>
-      <button class="secondary" id="logout" style="margin-left:auto">Выйти</button>
+      <div class="storage" id="storageWrap" title="Место на диске архива">
+        <div class="bar" id="storageBar"><i id="storageFill" style="width:0%"></i></div>
+        <span class="meta" id="storageMeta">…</span>
+      </div>
+      <button class="secondary" id="logout">Выйти</button>
     </header>
     <main>
       <section class="card">
-        <strong>Компьютеры</strong>
-        <p class="muted" style="margin:6px 0 8px">Выберите ПК. Двойной щелчок — переименовать.</p>
+        <strong>Рабочие места</strong>
         <ul id="pcs"></ul>
       </section>
       <section class="card">
@@ -59,11 +79,19 @@
           <input id="to" type="date" title="Дата по" />
           <button id="reload">Обновить</button>
         </div>
+        <div class="toolbar">
+          <button class="secondary" id="selAll" type="button">Выбрать все</button>
+          <button class="secondary" id="selNone" type="button">Снять</button>
+          <button class="secondary" id="dlSelected" type="button" disabled>Скачать выбранные</button>
+          <button class="danger" id="delSelected" type="button" disabled>Удалить выбранные</button>
+          <span class="muted" id="selCount"></span>
+        </div>
         <div id="playerWrap" hidden>
           <video id="player" controls preload="metadata" playsinline></video>
           <p class="muted" id="playerMeta"></p>
           <div class="row">
             <a class="dl" id="downloadLink" href="#" download>Скачать MP4 (HEVC)</a>
+            <button class="danger" id="deleteCurrent" type="button">Удалить эту запись</button>
           </div>
           <p class="err" id="playerErr"></p>
           <div class="hint" id="hevcHint" hidden>
@@ -71,16 +99,20 @@
             Многие браузеры не декодируют HEVC без системного кодека.
             <ol style="margin:8px 0 0; padding-left:18px">
               <li>Откройте эту страницу в <strong>Microsoft Edge</strong> или Chrome на Windows.</li>
-              <li>Установите бесплатно «<strong>Расширения для видео HEVC от производителя устройства</strong>» из Microsoft Store (или платный «HEVC Video Extensions»).</li>
+              <li>Установите бесплатно «<strong>Расширения для видео HEVC от производителя устройства</strong>» из Microsoft Store.</li>
               <li>Перезапустите браузер и нажмите ▶ снова.</li>
-              <li>Либо скачайте файл и откройте в <strong>VLC</strong> / «Кино и ТВ».</li>
+              <li>Либо скачайте файл и откройте в <strong>VLC</strong>.</li>
             </ol>
             <p class="muted" style="margin:8px 0 0">Проверка браузера: <span id="hevcSupport">…</span></p>
-            <p class="muted" style="margin:6px 0 0">Вход по IP VPS (http://IP:порт) поддерживается: видео отдаётся с того же сервера. Проблема обычно только в кодеке HEVC, не в IP.</p>
           </div>
         </div>
         <table>
-          <thead><tr><th>Время</th><th>ПК</th><th>Файл</th><th>Размер</th><th></th></tr></thead>
+          <thead>
+            <tr>
+              <th class="chk"><input type="checkbox" id="chkAll" title="Выбрать все" /></th>
+              <th>Время</th><th>ПК</th><th>Файл</th><th>Размер</th><th></th>
+            </tr>
+          </thead>
           <tbody id="recs"></tbody>
         </table>
         <p id="recsEmpty" class="empty" hidden>Нет записей по выбранным фильтрам.</p>
@@ -89,14 +121,13 @@
   </div>
 
 <script>
-const state = { token: localStorage.getItem('hsr_admin') || '', pc: '', currentId: null };
+const state = { token: localStorage.getItem('hsr_admin') || '', pc: '', currentId: null, rows: [] };
 
 function hevcCanPlay() {
   const v = document.createElement('video');
-  const a = v.canPlayType('video/mp4; codecs="hvc1.1.6.L93.B0"');
-  const b = v.canPlayType('video/mp4; codecs="hev1.1.6.L93.B0"');
-  const c = v.canPlayType('video/mp4; codecs="hvc1"');
-  return a || b || c;
+  return v.canPlayType('video/mp4; codecs="hvc1.1.6.L93.B0"')
+    || v.canPlayType('video/mp4; codecs="hev1.1.6.L93.B0"')
+    || v.canPlayType('video/mp4; codecs="hvc1"');
 }
 
 function refreshHevcHint(forceShow) {
@@ -116,7 +147,7 @@ async function api(path, opts={}) {
 }
 
 function showLogin(){ login.hidden=false; app.hidden=true; }
-function showApp(){ login.hidden=true; app.hidden=false; loadPcs(); loadRecs(); }
+function showApp(){ login.hidden=true; app.hidden=false; loadStorage(); loadPcs(); loadRecs(); }
 
 loginBtn.onclick = async () => {
   loginErr.textContent='';
@@ -127,46 +158,87 @@ loginBtn.onclick = async () => {
 };
 password.addEventListener('keydown', (e) => { if (e.key === 'Enter') loginBtn.click(); });
 logout.onclick = () => { state.token=''; localStorage.removeItem('hsr_admin'); showLogin(); };
-reload.onclick = () => loadRecs();
+reload.onclick = () => { loadStorage(); loadPcs(); loadRecs(); };
 q.onchange = from.onchange = to.onchange = () => loadRecs();
 
 player.addEventListener('error', () => {
   const err = player.error;
   let msg = 'Не удалось воспроизвести файл.';
   if (err) {
-    if (err.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED) {
-      msg = 'Браузер не смог открыть HEVC. Установите кодек HEVC (см. подсказку ниже) или скачайте файл.';
-    } else if (err.code === MediaError.MEDIA_ERR_NETWORK) {
-      msg = 'Ошибка сети при загрузке видео. Проверьте, что вы вошли и сервер доступен.';
-    } else if (err.code === MediaError.MEDIA_ERR_DECODE) {
-      msg = 'Ошибка декодирования HEVC. Нужен системный кодек или откройте файл в VLC.';
-    }
+    if (err.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED) msg = 'Браузер не смог открыть HEVC. Установите кодек или скачайте файл.';
+    else if (err.code === MediaError.MEDIA_ERR_NETWORK) msg = 'Ошибка сети при загрузке видео.';
+    else if (err.code === MediaError.MEDIA_ERR_DECODE) msg = 'Ошибка декодирования HEVC. Откройте файл в VLC.';
   }
   playerErr.textContent = msg;
   refreshHevcHint(true);
 });
 player.addEventListener('loadeddata', () => { playerErr.textContent = ''; hevcHint.hidden = !!hevcCanPlay(); });
 
+async function loadStorage(){
+  try {
+    const res = await api('/api/storage');
+    if (!res.ok) return;
+    const s = await res.json();
+    const used = s.used_bytes || 0;
+    const free = s.free_bytes || 0;
+    const total = s.total_bytes || (used + free) || 1;
+    const pct = Math.min(100, Math.round((used / total) * 100));
+    storageFill.style.width = pct + '%';
+    storageBar.className = 'bar' + (pct >= 92 ? ' crit' : pct >= 80 ? ' high' : '');
+    storageMeta.textContent = 'занято ' + fmtBytes(used) + ' · свободно ' + fmtBytes(free);
+  } catch (_) {}
+}
+
 async function loadPcs(){
   const res = await api('/api/computers');
   const list = await res.json();
   pcs.innerHTML = '';
   const all = document.createElement('li');
-  all.textContent = 'Все компьютеры';
-  all.className = state.pc ? '' : 'active';
-  all.onclick = () => { state.pc=''; [...pcs.children].forEach(c=>c.classList.remove('active')); all.classList.add('active'); loadRecs(); };
+  all.className = 'pc' + (state.pc ? '' : ' active');
+  all.innerHTML = `<div class="body"><strong>Все рабочие места</strong></div>`;
+  all.querySelector('.body').onclick = () => { state.pc=''; [...pcs.children].forEach(c=>c.classList.remove('active')); all.classList.add('active'); loadRecs(); };
   pcs.appendChild(all);
   for (const c of list) {
     const li = document.createElement('li');
-    li.innerHTML = `<div><strong>${escapeHtml(c.display_name)}</strong></div>
-      <div class="muted">${escapeHtml(c.pc_id)} · ${c.recording_count} · ${fmtBytes(c.total_bytes)}</div>`;
-    if (state.pc === c.pc_id) li.classList.add('active');
-    li.onclick = () => { state.pc=c.pc_id; [...pcs.children].forEach(x=>x.classList.remove('active')); li.classList.add('active'); loadRecs(); };
-    li.ondblclick = async () => {
-      const name = prompt('Отображаемое имя', c.display_name);
-      if (!name) return;
-      await api('/api/computers/' + encodeURIComponent(c.pc_id), { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ display_name: name }) });
+    li.className = 'pc' + (state.pc === c.pc_id ? ' active' : '');
+    li.innerHTML = `
+      <div class="body">
+        <div><strong>${escapeHtml(c.display_name)}</strong></div>
+        <div class="muted">${escapeHtml(c.pc_id)} · ${c.recording_count} · ${fmtBytes(c.total_bytes)}</div>
+      </div>
+      <button type="button" class="icon-btn edit" title="Переименовать">✎</button>
+      <button type="button" class="icon-btn trash" title="Удалить весь архив этого места">🗑</button>`;
+    li.querySelector('.body').onclick = () => {
+      state.pc = c.pc_id;
+      [...pcs.children].forEach(x => x.classList.remove('active'));
+      li.classList.add('active');
+      loadRecs();
+    };
+    li.querySelector('.edit').onclick = async (e) => {
+      e.stopPropagation();
+      const name = prompt('Отображаемое имя рабочего места', c.display_name);
+      if (!name || !name.trim()) return;
+      const res = await api('/api/computers/' + encodeURIComponent(c.pc_id), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ display_name: name.trim() })
+      });
+      if (!res.ok) { alert('Не удалось переименовать'); return; }
       loadPcs(); loadRecs();
+    };
+    li.querySelector('.trash').onclick = async (e) => {
+      e.stopPropagation();
+      const ok = prompt(
+        'Удаление всего архива рабочего места «' + c.display_name + '» (' + c.pc_id + ').\n' +
+        'Будет удалено записей: ' + c.recording_count + '.\n\n' +
+        'Для подтверждения введите: Удаление'
+      );
+      if (ok !== 'Удаление') return;
+      const res = await api('/api/computers/' + encodeURIComponent(c.pc_id), { method: 'DELETE' });
+      if (!res.ok) { alert('Не удалось удалить архив'); return; }
+      if (state.pc === c.pc_id) state.pc = '';
+      playerWrap.hidden = true;
+      loadStorage(); loadPcs(); loadRecs();
     };
     pcs.appendChild(li);
   }
@@ -180,21 +252,111 @@ async function loadRecs(){
   if (to.value) params.set('to', to.value + 'T23:59:59Z');
   const res = await api('/api/recordings?' + params.toString());
   const list = await res.json();
+  state.rows = list;
   recs.innerHTML = '';
   recsEmpty.hidden = list.length > 0;
+  chkAll.checked = false;
   for (const r of list) {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${escapeHtml(formatRecordedAt(r.recorded_at))}</td>
+    tr.dataset.id = String(r.id);
+    tr.innerHTML = `
+      <td class="chk"><input type="checkbox" class="rowchk" data-id="${r.id}" /></td>
+      <td>${escapeHtml(formatRecordedAt(r.recorded_at))}</td>
       <td>${escapeHtml(r.display_name)}</td>
       <td>${escapeHtml(r.file_name)}</td>
       <td>${fmtBytes(r.size_bytes)}</td>
-      <td><button data-id="${r.id}">▶</button></td>`;
-    tr.querySelector('button').onclick = () => play(r);
+      <td class="actions">
+        <button type="button" data-act="play">▶</button>
+        <button type="button" class="secondary" data-act="dl">⬇</button>
+        <button type="button" class="danger" data-act="del">🗑</button>
+      </td>`;
+    tr.querySelector('[data-act="play"]').onclick = () => play(r);
+    tr.querySelector('[data-act="dl"]').onclick = () => downloadOne(r);
+    tr.querySelector('[data-act="del"]').onclick = () => deleteOne(r);
+    tr.querySelector('.rowchk').onchange = updateSelUi;
     recs.appendChild(tr);
   }
+  updateSelUi();
 }
 
-/** Local wall time: YYYY-MM-DD␠␠␠HH:MM:SS (no T, no ms, no +00:00). */
+function selectedIds() {
+  return [...recs.querySelectorAll('.rowchk:checked')].map(el => Number(el.dataset.id));
+}
+
+function updateSelUi() {
+  const ids = selectedIds();
+  selCount.textContent = ids.length ? ('Выбрано: ' + ids.length) : '';
+  dlSelected.disabled = ids.length === 0;
+  delSelected.disabled = ids.length === 0;
+  const boxes = [...recs.querySelectorAll('.rowchk')];
+  chkAll.checked = boxes.length > 0 && boxes.every(b => b.checked);
+}
+
+chkAll.onchange = () => {
+  recs.querySelectorAll('.rowchk').forEach(b => { b.checked = chkAll.checked; });
+  updateSelUi();
+};
+selAll.onclick = () => { recs.querySelectorAll('.rowchk').forEach(b => { b.checked = true; }); updateSelUi(); };
+selNone.onclick = () => { recs.querySelectorAll('.rowchk').forEach(b => { b.checked = false; }); updateSelUi(); };
+
+dlSelected.onclick = async () => {
+  const ids = selectedIds();
+  for (const id of ids) {
+    const r = state.rows.find(x => x.id === id);
+    if (r) await downloadOne(r);
+    await new Promise(r => setTimeout(r, 250));
+  }
+};
+
+delSelected.onclick = async () => {
+  const ids = selectedIds();
+  if (!ids.length) return;
+  const ok = prompt(
+    'Удаление выбранных записей: ' + ids.length + ' шт.\n\nДля подтверждения введите: Удаление'
+  );
+  if (ok !== 'Удаление') return;
+  const res = await api('/api/recordings/delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids })
+  });
+  if (!res.ok) { alert('Не удалось удалить'); return; }
+  if (state.currentId && ids.includes(state.currentId)) {
+    playerWrap.hidden = true;
+    state.currentId = null;
+  }
+  loadStorage(); loadPcs(); loadRecs();
+};
+
+async function deleteOne(r) {
+  const ok = prompt(
+    'Удаление записи «' + r.file_name + '».\n\nДля подтверждения введите: Удаление'
+  );
+  if (ok !== 'Удаление') return;
+  const res = await api('/api/recordings/' + r.id, { method: 'DELETE' });
+  if (!res.ok) { alert('Не удалось удалить'); return; }
+  if (state.currentId === r.id) {
+    playerWrap.hidden = true;
+    state.currentId = null;
+  }
+  loadStorage(); loadPcs(); loadRecs();
+}
+
+deleteCurrent.onclick = () => {
+  const r = state.rows.find(x => x.id === state.currentId);
+  if (r) deleteOne(r);
+};
+
+function downloadOne(r) {
+  const a = document.createElement('a');
+  a.href = mediaUrl(r.id);
+  a.download = r.file_name || 'recording.mp4';
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
 function formatRecordedAt(iso) {
   if (!iso) return '';
   const d = new Date(iso);
@@ -228,7 +390,6 @@ function play(r){
     playerErr.textContent = 'Файл ещё не готов к просмотру (загрузка не завершена).';
     return;
   }
-  // Keep HEVC as-is; hint browser with hvc1 codec string (same file on disk).
   while (player.firstChild) player.removeChild(player.firstChild);
   const src = document.createElement('source');
   src.src = mediaUrl(r.id);
@@ -242,10 +403,17 @@ function play(r){
   });
 }
 
-function fmtBytes(n){ if(n<1024) return n+' B'; if(n<1048576) return (n/1024).toFixed(1)+' KB'; return (n/1048576).toFixed(1)+' MB'; }
+function fmtBytes(n){
+  n = Number(n) || 0;
+  if (n < 1024) return n + ' B';
+  if (n < 1048576) return (n/1024).toFixed(1) + ' KB';
+  if (n < 1073741824) return (n/1048576).toFixed(1) + ' MB';
+  return (n/1073741824).toFixed(2) + ' GB';
+}
 function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 if (state.token) showApp(); else showLogin();
+setInterval(() => { if (state.token) loadStorage(); }, 60000);
 </script>
 </body>
 </html>

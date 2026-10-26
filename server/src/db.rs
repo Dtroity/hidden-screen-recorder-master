@@ -252,6 +252,73 @@ impl Db {
         })
     }
 
+    pub fn recordings_by_ids(&self, ids: &[i64]) -> Result<Vec<RecordingRow>, String> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::new();
+        for id in ids {
+            if let Some(row) = self.recording_by_id(*id)? {
+                out.push(row);
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn delete_recording_row(&self, id: i64) -> Result<Option<RecordingRow>, String> {
+        let row = self.recording_by_id(id)?;
+        if row.is_some() {
+            self.with(|conn| {
+                conn.execute("DELETE FROM recordings WHERE id=?1", params![id])
+                    .map_err(|e| e.to_string())?;
+                Ok(())
+            })?;
+        }
+        Ok(row)
+    }
+
+    pub fn list_recording_paths_for_pc(&self, pc_id: &str) -> Result<Vec<RecordingRow>, String> {
+        self.with(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    r#"SELECT r.id, r.pc_id, c.display_name, r.file_name, r.relative_path,
+                              r.recorded_at, r.received_at, r.size_bytes, r.duration_secs, r.ready
+                       FROM recordings r JOIN computers c ON c.pc_id = r.pc_id
+                       WHERE r.pc_id = ?1"#,
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![pc_id], |row| {
+                    Ok(RecordingRow {
+                        id: row.get(0)?,
+                        pc_id: row.get(1)?,
+                        display_name: row.get(2)?,
+                        file_name: row.get(3)?,
+                        relative_path: row.get(4)?,
+                        recorded_at: row.get(5)?,
+                        received_at: row.get(6)?,
+                        size_bytes: row.get(7)?,
+                        duration_secs: row.get(8)?,
+                        ready: row.get::<_, i64>(9)? != 0,
+                    })
+                })
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            Ok(rows)
+        })
+    }
+
+    pub fn delete_computer_and_recordings(&self, pc_id: &str) -> Result<(), String> {
+        self.with(|conn| {
+            conn.execute("DELETE FROM recordings WHERE pc_id=?1", params![pc_id])
+                .map_err(|e| e.to_string())?;
+            conn.execute("DELETE FROM computers WHERE pc_id=?1", params![pc_id])
+                .map_err(|e| e.to_string())?;
+            Ok(())
+        })
+    }
+
     pub fn recording_by_id(&self, id: i64) -> Result<Option<RecordingRow>, String> {
         self.with(|conn| {
             conn.query_row(

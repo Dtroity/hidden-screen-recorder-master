@@ -12,6 +12,18 @@
 *.orig
 *.rej
 
+# Runtime agent control flags (must never ship)
+agent.stop
+agent.admin-stopped
+**/agent.stop
+**/agent.admin-stopped
+
+# Downloaded FFmpeg binary (fetched by packaging/windows/Ensure-FFmpeg.ps1)
+/third_party/ffmpeg/bin/
+/third_party/ffmpeg/SOURCE.txt
+/third_party/ffmpeg/LICENSE*
+/third_party/ffmpeg/COPYING*
+
 # Local settings, credentials and editor/agent state
 .env
 .env.*
