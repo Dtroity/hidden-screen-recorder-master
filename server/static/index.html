@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Архив записей</title>
+  <style>
+    :root { color-scheme: light; --bg:#f4f5f7; --card:#fff; --text:#1a1a1a; --muted:#667085; --accent:#2563eb; --line:#e4e7ec; }
+    * { box-sizing: border-box; }
+    body { margin:0; font:14px/1.45 system-ui,Segoe UI,sans-serif; background:var(--bg); color:var(--text); }
+    header { background:var(--card); border-bottom:1px solid var(--line); padding:12px 20px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+    header h1 { font-size:16px; margin:0; font-weight:600; }
+    main { display:grid; grid-template-columns: 280px 1fr; gap:16px; padding:16px; max-width:1400px; margin:0 auto; }
+    @media (max-width:900px){ main { grid-template-columns:1fr; } }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px; }
+    .muted { color:var(--muted); }
+    input, button, select { font:inherit; padding:7px 10px; border:1px solid var(--line); border-radius:8px; background:#fff; }
+    button { cursor:pointer; background:var(--accent); color:#fff; border-color:var(--accent); }
+    button.secondary { background:#fff; color:var(--text); border-color:var(--line); }
+    ul { list-style:none; margin:0; padding:0; }
+    li { padding:8px; border-radius:8px; cursor:pointer; }
+    li:hover, li.active { background:#eef4ff; }
+    table { width:100%; border-collapse:collapse; }
+    th, td { text-align:left; padding:8px; border-bottom:1px solid var(--line); font-size:13px; }
+    video { width:100%; max-height:420px; background:#000; border-radius:8px; }
+    #login { max-width:360px; margin:80px auto; }
+    .row { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; align-items:center; }
+    .err { color:#b42318; }
+    .hint { color:#344054; background:#fff8eb; border:1px solid #f5e0a3; border-radius:8px; padding:10px 12px; margin-top:8px; }
+    .empty { padding:16px; color:var(--muted); }
+    a.dl { color:var(--accent); }
+  </style>
+</head>
+<body>
+  <div id="login" class="card" hidden>
+    <h1>Вход администратора</h1>
+    <p class="muted">Пароль администратора из настройки сервера архива (не токен агента).</p>
+    <div class="row"><input id="password" type="password" placeholder="Пароль" style="flex:1" /></div>
+    <button id="loginBtn">Войти</button>
+    <p id="loginErr" class="err"></p>
+  </div>
+
+  <div id="app" hidden>
+    <header>
+      <h1>Архив записей экрана</h1>
+      <span class="muted" id="who"></span>
+      <button class="secondary" id="logout" style="margin-left:auto">Выйти</button>
+    </header>
+    <main>
+      <section class="card">
+        <strong>Компьютеры</strong>
+        <p class="muted" style="margin:6px 0 8px">Выберите ПК. Двойной щелчок — переименовать.</p>
+        <ul id="pcs"></ul>
+      </section>
+      <section class="card">
+        <div class="row">
+          <input id="q" placeholder="Поиск по имени / файлу" style="flex:1" />
+          <input id="from" type="date" title="Дата с" />
+          <input id="to" type="date" title="Дата по" />
+          <button id="reload">Обновить</button>
+        </div>
+        <div id="playerWrap" hidden>
+          <video id="player" controls preload="metadata" playsinline></video>
+          <p class="muted" id="playerMeta"></p>
+          <div class="row">
+            <a class="dl" id="downloadLink" href="#" download>Скачать MP4 (HEVC)</a>
+          </div>
+          <p class="err" id="playerErr"></p>
+          <div class="hint" id="hevcHint" hidden>
+            Записи хранятся в <strong>HEVC (H.265)</strong> — формат не меняется.
+            Многие браузеры не декодируют HEVC без системного кодека.
+            <ol style="margin:8px 0 0; padding-left:18px">
+              <li>Откройте эту страницу в <strong>Microsoft Edge</strong> или Chrome на Windows.</li>
+              <li>Установите бесплатно «<strong>Расширения для видео HEVC от производителя устройства</strong>» из Microsoft Store (или платный «HEVC Video Extensions»).</li>
+              <li>Перезапустите браузер и нажмите ▶ снова.</li>
+              <li>Либо скачайте файл и откройте в <strong>VLC</strong> / «Кино и ТВ».</li>
+            </ol>
+            <p class="muted" style="margin:8px 0 0">Проверка браузера: <span id="hevcSupport">…</span></p>
+            <p class="muted" style="margin:6px 0 0">Вход по IP VPS (http://IP:порт) поддерживается: видео отдаётся с того же сервера. Проблема обычно только в кодеке HEVC, не в IP.</p>
+          </div>
+        </div>
+        <table>
+          <thead><tr><th>Время</th><th>ПК</th><th>Файл</th><th>Размер</th><th></th></tr></thead>
+          <tbody id="recs"></tbody>
+        </table>
+        <p id="recsEmpty" class="empty" hidden>Нет записей по выбранным фильтрам.</p>
+      </section>
+    </main>
+  </div>
+
+<script>
+const state = { token: localStorage.getItem('hsr_admin') || '', pc: '', currentId: null };
+
+function hevcCanPlay() {
+  const v = document.createElement('video');
+  const a = v.canPlayType('video/mp4; codecs="hvc1.1.6.L93.B0"');
+  const b = v.canPlayType('video/mp4; codecs="hev1.1.6.L93.B0"');
+  const c = v.canPlayType('video/mp4; codecs="hvc1"');
+  return a || b || c;
+}
+
+function refreshHevcHint(forceShow) {
+  const support = hevcCanPlay();
+  hevcSupport.textContent = support
+    ? ('поддерживается (' + support + ')')
+    : 'не поддерживается этим браузером без кодека HEVC';
+  hevcHint.hidden = !(forceShow || !support);
+}
+
+async function api(path, opts={}) {
+  const headers = Object.assign({}, opts.headers || {});
+  if (state.token) headers['Authorization'] = 'Bearer ' + state.token;
+  const res = await fetch(path, Object.assign({}, opts, { headers }));
+  if (res.status === 401) { state.token=''; localStorage.removeItem('hsr_admin'); showLogin(); throw new Error('unauthorized'); }
+  return res;
+}
+
+function showLogin(){ login.hidden=false; app.hidden=true; }
+function showApp(){ login.hidden=true; app.hidden=false; loadPcs(); loadRecs(); }
+
+loginBtn.onclick = async () => {
+  loginErr.textContent='';
+  const res = await fetch('/api/login', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ password: password.value }) });
+  if (!res.ok) { loginErr.textContent='Неверный пароль администратора (это не токен агента)'; return; }
+  const data = await res.json();
+  state.token = data.token; localStorage.setItem('hsr_admin', state.token); showApp();
+};
+password.addEventListener('keydown', (e) => { if (e.key === 'Enter') loginBtn.click(); });
+logout.onclick = () => { state.token=''; localStorage.removeItem('hsr_admin'); showLogin(); };
+reload.onclick = () => loadRecs();
+q.onchange = from.onchange = to.onchange = () => loadRecs();
+
+player.addEventListener('error', () => {
+  const err = player.error;
+  let msg = 'Не удалось воспроизвести файл.';
+  if (err) {
+    if (err.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED) {
+      msg = 'Браузер не смог открыть HEVC. Установите кодек HEVC (см. подсказку ниже) или скачайте файл.';
+    } else if (err.code === MediaError.MEDIA_ERR_NETWORK) {
+      msg = 'Ошибка сети при загрузке видео. Проверьте, что вы вошли и сервер доступен.';
+    } else if (err.code === MediaError.MEDIA_ERR_DECODE) {
+      msg = 'Ошибка декодирования HEVC. Нужен системный кодек или откройте файл в VLC.';
+    }
+  }
+  playerErr.textContent = msg;
+  refreshHevcHint(true);
+});
+player.addEventListener('loadeddata', () => { playerErr.textContent = ''; hevcHint.hidden = !!hevcCanPlay(); });
+
+async function loadPcs(){
+  const res = await api('/api/computers');
+  const list = await res.json();
+  pcs.innerHTML = '';
+  const all = document.createElement('li');
+  all.textContent = 'Все компьютеры';
+  all.className = state.pc ? '' : 'active';
+  all.onclick = () => { state.pc=''; [...pcs.children].forEach(c=>c.classList.remove('active')); all.classList.add('active'); loadRecs(); };
+  pcs.appendChild(all);
+  for (const c of list) {
+    const li = document.createElement('li');
+    li.innerHTML = `<div><strong>${escapeHtml(c.display_name)}</strong></div>
+      <div class="muted">${escapeHtml(c.pc_id)} · ${c.recording_count} · ${fmtBytes(c.total_bytes)}</div>`;
+    if (state.pc === c.pc_id) li.classList.add('active');
+    li.onclick = () => { state.pc=c.pc_id; [...pcs.children].forEach(x=>x.classList.remove('active')); li.classList.add('active'); loadRecs(); };
+    li.ondblclick = async () => {
+      const name = prompt('Отображаемое имя', c.display_name);
+      if (!name) return;
+      await api('/api/computers/' + encodeURIComponent(c.pc_id), { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ display_name: name }) });
+      loadPcs(); loadRecs();
+    };
+    pcs.appendChild(li);
+  }
+}
+
+async function loadRecs(){
+  const params = new URLSearchParams();
+  if (state.pc) params.set('pc_id', state.pc);
+  if (q.value.trim()) params.set('q', q.value.trim());
+  if (from.value) params.set('from', from.value + 'T00:00:00Z');
+  if (to.value) params.set('to', to.value + 'T23:59:59Z');
+  const res = await api('/api/recordings?' + params.toString());
+  const list = await res.json();
+  recs.innerHTML = '';
+  recsEmpty.hidden = list.length > 0;
+  for (const r of list) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${escapeHtml(formatRecordedAt(r.recorded_at))}</td>
+      <td>${escapeHtml(r.display_name)}</td>
+      <td>${escapeHtml(r.file_name)}</td>
+      <td>${fmtBytes(r.size_bytes)}</td>
+      <td><button data-id="${r.id}">▶</button></td>`;
+    tr.querySelector('button').onclick = () => play(r);
+    recs.appendChild(tr);
+  }
+}
+
+/** Local wall time: YYYY-MM-DD␠␠␠HH:MM:SS (no T, no ms, no +00:00). */
+function formatRecordedAt(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) {
+    return String(iso).replace('T', '   ').replace(/\.\d+/, '').replace(/([+-]\d{2}:\d{2}|Z)$/i, '');
+  }
+  const p = (n) => String(n).padStart(2, '0');
+  return (
+    d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) +
+    '   ' +
+    p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds())
+  );
+}
+
+function mediaUrl(id) {
+  return '/api/media/' + id + '?access_token=' + encodeURIComponent(state.token);
+}
+
+function play(r){
+  playerWrap.hidden = false;
+  playerErr.textContent = '';
+  state.currentId = r.id;
+  downloadLink.href = mediaUrl(r.id);
+  downloadLink.setAttribute('download', r.file_name || 'recording.mp4');
+  refreshHevcHint(false);
+  if (r.ready === false) {
+    player.removeAttribute('src');
+    while (player.firstChild) player.removeChild(player.firstChild);
+    player.load();
+    playerMeta.textContent = r.display_name + ' · ' + r.file_name;
+    playerErr.textContent = 'Файл ещё не готов к просмотру (загрузка не завершена).';
+    return;
+  }
+  // Keep HEVC as-is; hint browser with hvc1 codec string (same file on disk).
+  while (player.firstChild) player.removeChild(player.firstChild);
+  const src = document.createElement('source');
+  src.src = mediaUrl(r.id);
+  src.type = 'video/mp4; codecs="hvc1.1.6.L120.B0"';
+  player.appendChild(src);
+  player.load();
+  playerMeta.textContent = r.display_name + ' · ' + r.file_name + ' · ' + fmtBytes(r.size_bytes) + ' · HEVC';
+  player.play().catch(() => {
+    playerErr.textContent = 'Автозапуск заблокирован или кодек HEVC недоступен. Нажмите Play или см. подсказку ниже.';
+    refreshHevcHint(true);
+  });
+}
+
+function fmtBytes(n){ if(n<1024) return n+' B'; if(n<1048576) return (n/1024).toFixed(1)+' KB'; return (n/1048576).toFixed(1)+' MB'; }
+function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+if (state.token) showApp(); else showLogin();
+</script>
+</body>
+</html>

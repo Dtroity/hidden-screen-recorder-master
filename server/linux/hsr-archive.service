@@ -1,0 +1,23 @@
+[Unit]
+Description=HSR video archive server
+After=network.target
+
+[Service]
+Type=simple
+User=hsr
+Group=hsr
+WorkingDirectory=/opt/hsr
+ExecStart=/opt/hsr/archive-server --config /etc/hsr/server.toml run
+# Auto-restart after crashes; systemctl stop stays stopped.
+Restart=on-failure
+RestartSec=3
+StartLimitIntervalSec=60
+StartLimitBurst=10
+# Do not put secrets in Environment= lines that get logged.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/hsr-archive /etc/hsr
+
+[Install]
+WantedBy=multi-user.target
