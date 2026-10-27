@@ -137,10 +137,8 @@ pub fn run() -> Result<(), String> {
                 blocked_until_wake_clear = true;
             }
             wake_cooldown_until = Some(Instant::now() + Duration::from_secs(5));
-            // After sleep: push any finished files that waited while the network was down.
-            if let Err(error) = crate::archive_upload::recover_pending_and_flush(&config) {
-                debug_log::write(error.to_string());
-            }
+            // Never block the agent loop on HTTP — that used to look like "sleep".
+            spawn_archive_flush(config.clone(), true);
             last_archive_flush = Instant::now();
             last_archive_recover = Instant::now();
         }
@@ -160,9 +158,7 @@ pub fn run() -> Result<(), String> {
             }
             wake_cooldown_until = Some(Instant::now() + Duration::from_secs(5));
             debug_log::write("power: resume edge; applying 5s recording cooldown");
-            if let Err(error) = crate::archive_upload::recover_pending_and_flush(&config) {
-                debug_log::write(error.to_string());
-            }
+            spawn_archive_flush(config.clone(), true);
             last_archive_flush = Instant::now();
             last_archive_recover = Instant::now();
         }
@@ -181,19 +177,16 @@ pub fn run() -> Result<(), String> {
             }
             last_config_reload = Instant::now();
         }
-        if last_archive_flush.elapsed() > Duration::from_secs(15) {
-            if let Err(error) = crate::archive_upload::flush_queue(&config) {
-                debug_log::write(error.to_string());
-            }
+        // Background flush only — must not stall the recording control loop.
+        if last_archive_flush.elapsed() > Duration::from_secs(30) {
+            spawn_archive_flush(config.clone(), false);
             last_archive_flush = Instant::now();
         }
         // Periodic folder scan only while idle — never touch a live *.partial.mp4.
         if matches!(phase, AgentPhase::Idle)
             && last_archive_recover.elapsed() > Duration::from_secs(60)
         {
-            if let Err(error) = crate::archive_upload::recover_pending_and_flush(&config) {
-                debug_log::write(error.to_string());
-            }
+            spawn_archive_flush(config.clone(), true);
             last_archive_recover = Instant::now();
             last_archive_flush = Instant::now();
         }
@@ -262,8 +255,8 @@ pub fn run() -> Result<(), String> {
     if matches!(phase, AgentPhase::Recording | AgentPhase::Stopping) {
         stop_signal.store(true, Ordering::Release);
         recorder.stop();
-        // Wait for Finished/Failed so moov is written when possible (reboot path).
-        let deadline = Instant::now() + Duration::from_secs(20);
+        // Wait for Finished/Failed so moov is written + admin-stop sync upload can finish.
+        let deadline = Instant::now() + Duration::from_secs(150);
         while Instant::now() < deadline {
             if let Some(receiver) = &recorder_events {
                 let events: Vec<_> = receiver.try_iter().collect();
@@ -342,6 +335,21 @@ fn desired_recording(
     schedule::recording_allowed(&config.schedule)
 }
 
+fn spawn_archive_flush(config: AppConfig, recover: bool) {
+    let _ = thread::Builder::new()
+        .name("archive-flush".into())
+        .spawn(move || {
+            let result = if recover {
+                crate::archive_upload::recover_pending_and_flush(&config)
+            } else {
+                crate::archive_upload::flush_queue(&config)
+            };
+            if let Err(error) = result {
+                debug_log::write(error.to_string());
+            }
+        });
+}
+
 fn start_recording(
     config: &AppConfig,
     recorder: &mut RecorderManager,
@@ -392,31 +400,51 @@ fn handle_recorder_event(
         RecorderEvent::Finished(path) => {
             debug_log::write(format!("agent: recording finished -> {}", path.display()));
             *failure_cooldown_until = None;
-            // Enqueue immediately, flush in background so the next segment can start
-            // without waiting for a slow WAN upload.
             thread::sleep(Duration::from_millis(400));
             let cfg = config.clone();
             let upload_path = path.clone();
-            if let Err(error) = crate::archive_upload::enqueue(&cfg, &upload_path) {
-                debug_log::write(error.to_string());
+            // Admin/console/reboot stop: upload synchronously so Stop-Agent does not
+            // force-kill before the file reaches the archive server.
+            let stopping = admin_stopped() || crate::shutdown::requested() || stop_request_pending();
+            if stopping {
+                if let Err(error) =
+                    crate::archive_upload::enqueue_and_flush(&cfg, &upload_path)
+                {
+                    debug_log::write(error.to_string());
+                }
+                match upload::upload_recording(&cfg, &upload_path) {
+                    Ok(Some(result)) => debug_log::write(format!(
+                        "agent: share-upload {} (deleted_local={})",
+                        result.destination.display(),
+                        result.deleted_local
+                    )),
+                    Ok(None) => {}
+                    Err(error) => debug_log::write(error.to_string()),
+                }
+            } else {
+                // Normal segment roll: enqueue now, flush in background so the next
+                // segment can start without waiting for a slow WAN upload.
+                if let Err(error) = crate::archive_upload::enqueue(&cfg, &upload_path) {
+                    debug_log::write(error.to_string());
+                }
+                thread::Builder::new()
+                    .name("archive-upload".into())
+                    .spawn(move || {
+                        if let Err(error) = crate::archive_upload::flush_queue(&cfg) {
+                            debug_log::write(error.to_string());
+                        }
+                        match upload::upload_recording(&cfg, &upload_path) {
+                            Ok(Some(result)) => debug_log::write(format!(
+                                "agent: share-upload {} (deleted_local={})",
+                                result.destination.display(),
+                                result.deleted_local
+                            )),
+                            Ok(None) => {}
+                            Err(error) => debug_log::write(error.to_string()),
+                        }
+                    })
+                    .ok();
             }
-            thread::Builder::new()
-                .name("archive-upload".into())
-                .spawn(move || {
-                    if let Err(error) = crate::archive_upload::flush_queue(&cfg) {
-                        debug_log::write(error.to_string());
-                    }
-                    match upload::upload_recording(&cfg, &upload_path) {
-                        Ok(Some(result)) => debug_log::write(format!(
-                            "agent: share-upload {} (deleted_local={})",
-                            result.destination.display(),
-                            result.deleted_local
-                        )),
-                        Ok(None) => {}
-                        Err(error) => debug_log::write(error.to_string()),
-                    }
-                })
-                .ok();
             recorder.clear();
             *recorder_events = None;
             *phase = AgentPhase::Idle;

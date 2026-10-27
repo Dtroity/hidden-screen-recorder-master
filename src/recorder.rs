@@ -15,20 +15,26 @@ use std::{
 
 use chrono::Local;
 use windows::Win32::{
+    Foundation::ERROR_SUCCESS,
     Graphics::Gdi::{
         BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CAPTUREBLT, CreateCompatibleDC,
         CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetMonitorInfoW, HBITMAP,
         HDC, HGDIOBJ, HMONITOR, MONITORINFO, ROP_CODE, ReleaseDC, SRCCOPY, SelectObject,
+    },
+    System::Registry::{
+        HKEY_CURRENT_USER, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ, RegCloseKey,
+        RegCreateKeyExW, RegSetValueExW,
     },
     UI::WindowsAndMessaging::{
         CURSOR_SHOWING, CURSORINFO, DI_NORMAL, DrawIconEx, GetCursorInfo, GetIconInfo, HICON,
         ICONINFO,
     },
 };
+use windows::core::{HSTRING, PCWSTR};
 use windows_capture::{
     capture::{Context, GraphicsCaptureApiHandler},
     frame::Frame,
-    graphics_capture_api::InternalCaptureControl,
+    graphics_capture_api::{GraphicsCaptureApi, InternalCaptureControl},
     monitor::Monitor,
     settings::{
         ColorFormat, CursorCaptureSettings, DirtyRegionSettings, DrawBorderSettings,
@@ -817,13 +823,30 @@ fn run(config: AppConfig, stop: Arc<AtomicBool>, events: Sender<RecorderEvent>) 
         }
     }
 
+    // Yellow WGC border: only Win11+ can disable it. If the API is missing, GDI has no border.
+    let border_toggle_ok =
+        GraphicsCaptureApi::is_border_settings_supported().unwrap_or(false);
+    if !border_toggle_ok {
+        debug_log::write(
+            "WGC cannot hide yellow border on this OS; using GDI capture (no border)",
+        );
+        run_gdi(monitor, flags);
+        return;
+    }
+    ensure_wgc_borderless_consent();
+
+    let cursor_settings = if config.show_cursor {
+        CursorCaptureSettings::Default
+    } else if GraphicsCaptureApi::is_cursor_settings_supported().unwrap_or(false) {
+        CursorCaptureSettings::WithoutCursor
+    } else {
+        debug_log::write("cursor capture toggle unsupported; using Default");
+        CursorCaptureSettings::Default
+    };
+
     let settings = Settings::new(
         monitor,
-        if config.show_cursor {
-            CursorCaptureSettings::Default
-        } else {
-            CursorCaptureSettings::WithoutCursor
-        },
+        cursor_settings,
         DrawBorderSettings::WithoutBorder,
         SecondaryWindowSettings::Default,
         MinimumUpdateIntervalSettings::Default,
@@ -887,6 +910,57 @@ fn run(config: AppConfig, stop: Arc<AtomicBool>, events: Sender<RecorderEvent>) 
         )));
     } else {
         emit_finished_or_reject(&events, output);
+    }
+}
+
+/// Allow unpackaged desktop apps to hide the yellow WGC screenshot border (Win11).
+/// Writes HKCU ConsentStore — no elevation required; ignored on older Windows.
+fn ensure_wgc_borderless_consent() {
+    const ROOT: &str =
+        r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore";
+    for sub in [
+        "graphicsCaptureWithoutBorder",
+        r"graphicsCaptureWithoutBorder\NonPackaged",
+        "graphicsCaptureProgrammatic",
+        r"graphicsCaptureProgrammatic\NonPackaged",
+    ] {
+        let path = format!("{ROOT}\\{sub}");
+        if let Err(error) = set_hkcu_reg_sz(&path, "Value", "Allow") {
+            debug_log::write(format!("borderless consent {path}: {error}"));
+        }
+    }
+}
+
+fn set_hkcu_reg_sz(subkey: &str, name: &str, value: &str) -> windows::core::Result<()> {
+    unsafe {
+        let mut key = Default::default();
+        let sub = HSTRING::from(subkey);
+        let value_name = HSTRING::from(name);
+        let status = RegCreateKeyExW(
+            HKEY_CURRENT_USER,
+            PCWSTR(sub.as_ptr()),
+            None,
+            None,
+            REG_OPTION_NON_VOLATILE,
+            KEY_SET_VALUE,
+            None,
+            &mut key,
+            None,
+        );
+        if status != ERROR_SUCCESS {
+            return Err(windows::core::Error::from(status));
+        }
+        let wide: Vec<u16> = value.encode_utf16().chain(std::iter::once(0)).collect();
+        let bytes = std::slice::from_raw_parts(
+            wide.as_ptr() as *const u8,
+            wide.len() * std::mem::size_of::<u16>(),
+        );
+        let set = RegSetValueExW(key, PCWSTR(value_name.as_ptr()), None, REG_SZ, Some(bytes));
+        let _ = RegCloseKey(key);
+        if set != ERROR_SUCCESS {
+            return Err(windows::core::Error::from(set));
+        }
+        Ok(())
     }
 }
 

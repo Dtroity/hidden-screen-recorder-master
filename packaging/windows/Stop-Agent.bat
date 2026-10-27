@@ -25,13 +25,15 @@ if errorlevel 1 (
   exit /b 0
 )
 
-echo Stopping agent gracefully...
+echo Stopping agent gracefully (finalize MP4 + upload to archive)...
+echo This can take up to 3 minutes for a long segment. Do not close this window.
 set /a WAIT=0
 :wait_loop
 tasklist /FI "IMAGENAME eq recorder-agent.exe" 2>nul | findstr /I /C:"recorder-agent.exe" >nul
 if errorlevel 1 goto done
 set /a WAIT+=1
-if !WAIT! GEQ 6 goto force
+REM Allow FFmpeg finalize + archive upload before force-kill (was 6s — too short).
+if !WAIT! GEQ 180 goto force
 timeout /t 1 /nobreak >nul
 goto wait_loop
 

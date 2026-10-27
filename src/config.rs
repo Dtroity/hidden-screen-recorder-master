@@ -251,7 +251,7 @@ impl Default for AppConfig {
             microphone_filter_defaults_version: 1,
             audio_buffer_ms: 250,
             audio_device_timestamps: true,
-            duration_minutes: 15,
+            duration_minutes: 60,
             output_dir,
             filename_template: crate::filename::DEFAULT_TEMPLATE.to_owned(),
             logging_enabled: false,
@@ -273,7 +273,7 @@ impl Default for AppConfig {
             record_on_wake: true,
             agent_autostart: false,
             max_recording_sessions: 1,
-            size_defaults_version: 3,
+            size_defaults_version: 4,
         }
     }
 }
@@ -507,16 +507,27 @@ impl AppConfig {
             config.size_defaults_version = 2;
             hevc_defaults_migrated = true;
         }
-        // v3: roll recordings every 15 min so finished MP4s can upload during the workday
-        // (duration 0 = one endless file → upload only on stop/sleep).
+        // v3: enable logging; avoid endless single-file sessions.
         let mut segment_migrated = false;
         if config.size_defaults_version < 3 {
             if config.duration_minutes == 0 {
-                config.duration_minutes = 15;
+                config.duration_minutes = 60;
                 segment_migrated = true;
             }
             config.logging_enabled = true;
             config.size_defaults_version = 3;
+        }
+        // v4: office segments 60 min (was briefly 15; also fixes short clips from sleep false-positives).
+        if config.size_defaults_version < 4 {
+            if config.duration_minutes > 0 && config.duration_minutes < 30 {
+                config.duration_minutes = 60;
+                segment_migrated = true;
+            }
+            if config.duration_minutes == 0 {
+                config.duration_minutes = 60;
+                segment_migrated = true;
+            }
+            config.size_defaults_version = 4;
         }
         let mut assigned_device_id = false;
         if config
@@ -584,8 +595,8 @@ impl AppConfig {
                 ))
             } else if segment_migrated {
                 Some(msg!(
-                    "Recordings now split every 15 minutes so files can upload to the archive during the day.",
-                    "Запись нарезается каждые 15 минут, чтобы файлы уходили в архив в течение дня."
+                    "Recordings now split every 60 minutes (unless sleep/shutdown stops sooner).",
+                    "Запись нарезается каждые 60 минут (раньше — при сне или выключении)."
                 ))
             } else {
                 changed.then(|| {
@@ -641,7 +652,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("settings.json");
         // Pin size_defaults_version so product migrations do not rewrite this fixture.
-        fs::write(&path, r#"{"microphone_noise_suppression":false,"microphone_noise_method":"speex","microphone_volume":0.8,"size_defaults_version":3}"#).unwrap();
+        fs::write(&path, r#"{"microphone_noise_suppression":false,"microphone_noise_method":"speex","microphone_volume":0.8,"size_defaults_version":4}"#).unwrap();
         let (mut config, warning) = AppConfig::load_from(&path).unwrap();
         assert!(warning.is_none());
         assert!(config.microphone_noise_suppression);
@@ -710,7 +721,7 @@ mod tests {
     fn invalid_values_are_corrected_with_a_warning() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("settings.json");
-        fs::write(&path, r#"{"fps":0,"bitrate_mbps":300,"microphone_threshold_db":-100,"duration_minutes":99999,"shortcuts":{"stop":{"key":120,"ctrl":true,"alt":false,"shift":false}},"size_defaults_version":3}"#).unwrap();
+        fs::write(&path, r#"{"fps":0,"bitrate_mbps":300,"microphone_threshold_db":-100,"duration_minutes":99999,"shortcuts":{"stop":{"key":120,"ctrl":true,"alt":false,"shift":false}},"size_defaults_version":4}"#).unwrap();
         let (loaded, warning) = AppConfig::load_from(&path).unwrap();
         assert_eq!(loaded.fps, 1);
         assert_eq!(loaded.bitrate_mbps, 100);

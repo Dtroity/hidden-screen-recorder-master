@@ -316,7 +316,11 @@ impl SleepJumpDetector {
             .unwrap_or(Duration::ZERO);
         self.last_instant = now_i;
         self.last_wall = now_w;
-        if instant_gap > Duration::from_secs(3) || wall_gap > Duration::from_secs(3) {
+        // Real suspend/hibernate: wall clock jumps ahead of monotonic Instant.
+        // A blocked agent thread (HTTP upload) advances Instant and wall together —
+        // that must NOT be treated as sleep (it was stopping recordings every few seconds).
+        let skew = wall_gap.saturating_sub(instant_gap);
+        if wall_gap > Duration::from_secs(15) && skew > Duration::from_secs(5) {
             mark_resumed_global();
             true
         } else {

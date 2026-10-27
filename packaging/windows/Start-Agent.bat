@@ -43,18 +43,28 @@ if errorlevel 1 (
 echo Agent started.
 
 :install_watchdog
-set "WATCH=%CD%\Watch-Agent.bat"
-if not exist "!WATCH!" set "WATCH=%CD%\packaging\windows\Watch-Agent.bat"
-if exist "!WATCH!" (
-  schtasks /Create /TN "OfficePC-RecorderAgentWatchdog" /SC MINUTE /MO 2 /TR "\"!WATCH!\"" /F >nul 2>&1
+REM Silent watchdog via wscript (no cmd.exe flash). Use 8.3 path — schtasks breaks on spaces.
+set "WATCH_TR="
+if exist "%CD%\Watch-Agent.vbs" (
+  for %%I in ("%CD%\Watch-Agent.vbs") do set "WATCH_TR=wscript.exe //B //Nologo %%~sI"
+)
+if "!WATCH_TR!"=="" if exist "%CD%\Watch-Agent.ps1" (
+  for %%I in ("%CD%\Watch-Agent.ps1") do set "WATCH_TR=powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File %%~sI"
+)
+if "!WATCH_TR!"=="" if exist "%CD%\Watch-Agent.bat" (
+  for %%I in ("%CD%\Watch-Agent.bat") do set "WATCH_TR=%%~sI"
+)
+
+if not "!WATCH_TR!"=="" (
+  schtasks /Create /TN "OfficePC-RecorderAgentWatchdog" /SC MINUTE /MO 2 /TR "!WATCH_TR!" /F >nul 2>&1
   if errorlevel 1 (
     echo [WARN] Could not register watchdog task. Agent still started.
   ) else (
-    echo Watchdog installed: restarts after crashes ^(not after Stop-Agent^).
+    echo Watchdog installed: silent restart after crashes ^(not after Stop-Agent^).
   )
 )
 echo.
-echo Settings: %CD%\settings.json  ^(portable; created by the console^)
-echo Archive log: %%LOCALAPPDATA%%\hidden-screen-recorder\archive_upload.log
+echo Settings: %CD%\settings.json
+echo Archive log: %CD%\archive_upload.log
 echo.
 pause

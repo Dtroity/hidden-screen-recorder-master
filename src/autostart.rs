@@ -1,5 +1,6 @@
 //! Visible logon autostart via HKCU Run (avoids schtasks OEM/encoding issues).
 
+use std::os::windows::ffi::OsStrExt;
 use std::path::PathBuf;
 
 use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, WIN32_ERROR};
@@ -65,9 +66,7 @@ pub fn enable() -> Result<(), Message> {
         )
     })?;
     // Clean up the Task Scheduler entry from older builds (ignore failures).
-    let _ = std::process::Command::new("schtasks")
-        .args(["/Delete", "/TN", "OfficePC-RecorderAgent", "/F"])
-        .output();
+    let _ = run_schtasks(&["/Delete", "/TN", "OfficePC-RecorderAgent", "/F"]);
     let _ = enable_watchdog_task();
     // Allow watchdog / Run key to start the agent again.
     if let Some(flag) = admin_stopped_flag_path() {
@@ -83,12 +82,8 @@ pub fn disable() -> Result<(), Message> {
             "Не удалось отключить автозапуск: {error}"
         )
     })?;
-    let _ = std::process::Command::new("schtasks")
-        .args(["/Delete", "/TN", "OfficePC-RecorderAgent", "/F"])
-        .output();
-    let _ = std::process::Command::new("schtasks")
-        .args(["/Delete", "/TN", "OfficePC-RecorderAgentWatchdog", "/F"])
-        .output();
+    let _ = run_schtasks(&["/Delete", "/TN", "OfficePC-RecorderAgent", "/F"]);
+    let _ = run_schtasks(&["/Delete", "/TN", "OfficePC-RecorderAgentWatchdog", "/F"]);
     Ok(())
 }
 
@@ -98,42 +93,86 @@ fn admin_stopped_flag_path() -> Option<PathBuf> {
         .and_then(|p| p.parent().map(|d| d.join("agent.admin-stopped")))
 }
 
-fn watchdog_bat_path() -> Option<PathBuf> {
+fn package_root() -> Option<PathBuf> {
     let exe = agent_exe_path().ok()?;
     let dir = exe.parent()?;
-    // Prefer Watch-Agent.bat next to package root (parent of bin\) or next to exe.
-    let candidates = [
-        dir.join("Watch-Agent.bat"),
-        dir.parent().map(|p| p.join("Watch-Agent.bat")).unwrap_or_default(),
-    ];
-    candidates.into_iter().find(|p| p.is_file())
+    if dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.eq_ignore_ascii_case("bin"))
+    {
+        dir.parent().map(|p| p.to_path_buf())
+    } else {
+        Some(dir.to_path_buf())
+    }
+}
+
+/// Silent watchdog action for Task Scheduler (no cmd.exe flash).
+/// Uses 8.3 short paths — `schtasks /TR` splits on spaces in user profile paths.
+fn watchdog_task_command() -> Option<String> {
+    let root = package_root()?;
+    let vbs = root.join("Watch-Agent.vbs");
+    let ps1 = root.join("Watch-Agent.ps1");
+    if vbs.is_file() {
+        let short = short_path(&vbs).unwrap_or_else(|| vbs.display().to_string());
+        Some(format!("wscript.exe //B //Nologo {short}"))
+    } else if ps1.is_file() {
+        let short = short_path(&ps1).unwrap_or_else(|| ps1.display().to_string());
+        Some(format!(
+            "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File {short}"
+        ))
+    } else {
+        None
+    }
+}
+
+fn short_path(path: &std::path::Path) -> Option<String> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::GetShortPathNameW;
+    let wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut buf = vec![0u16; 512];
+    let len = unsafe { GetShortPathNameW(PCWSTR(wide.as_ptr()), Some(&mut buf)) };
+    if len == 0 || (len as usize) >= buf.len() {
+        return None;
+    }
+    Some(String::from_utf16_lossy(&buf[..len as usize]))
+}
+
+fn run_schtasks(args: &[&str]) -> std::io::Result<std::process::Output> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    std::process::Command::new("schtasks")
+        .args(args)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
 }
 
 fn enable_watchdog_task() -> Result<(), Message> {
-    let Some(watch) = watchdog_bat_path() else {
+    let Some(tr) = watchdog_task_command() else {
         return Ok(());
     };
-    let tr = format!("\"{}\"", watch.display());
-    let output = std::process::Command::new("schtasks")
-        .args([
-            "/Create",
-            "/TN",
-            "OfficePC-RecorderAgentWatchdog",
-            "/SC",
-            "MINUTE",
-            "/MO",
-            "2",
-            "/TR",
-            &tr,
-            "/F",
-        ])
-        .output()
-        .map_err(|error| {
-            msg!(
-                "Could not create watchdog task: {error}",
-                "Не удалось создать задачу watchdog: {error}"
-            )
-        })?;
+    let output = run_schtasks(&[
+        "/Create",
+        "/TN",
+        "OfficePC-RecorderAgentWatchdog",
+        "/SC",
+        "MINUTE",
+        "/MO",
+        "2",
+        "/TR",
+        &tr,
+        "/F",
+    ])
+    .map_err(|error| {
+        msg!(
+            "Could not create watchdog task: {error}",
+            "Не удалось создать задачу watchdog: {error}"
+        )
+    })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(msg!(
@@ -216,12 +255,13 @@ pub fn stop_agent() -> Result<(), Message> {
         return Ok(());
     }
 
-    for _ in 0..8 {
+    // Allow FFmpeg finalize + archive HTTP upload (was ~3s — clips never reached the server).
+    for _ in 0..180 {
         if !crate::session::agent_process_running() {
             let _ = std::fs::remove_file(dir.join("agent.stop"));
             return Ok(());
         }
-        std::thread::sleep(std::time::Duration::from_millis(400));
+        std::thread::sleep(std::time::Duration::from_secs(1));
     }
 
     crate::session::force_kill_agent_processes();

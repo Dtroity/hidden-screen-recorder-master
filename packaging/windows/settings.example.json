@@ -6,7 +6,7 @@
   "microphone": false,
   "logging_enabled": true,
   "hide_window": true,
-  "duration_minutes": 15,
+  "duration_minutes": 60,
   "pc_id": null,
   "archive_upload_enabled": true,
   "archive_url": "http://185.186.142.51:8787",
@@ -16,7 +16,7 @@
   "agent_autostart": true,
   "stop_on_sleep": true,
   "record_on_wake": true,
-  "size_defaults_version": 3,
+  "size_defaults_version": 4,
   "schedule": {
     "enabled": false,
     "start_minutes": 540,

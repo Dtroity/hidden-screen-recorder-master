@@ -537,44 +537,11 @@ fn post_file(config: &AppConfig, base: &str, token: &str, path: &Path) -> Result
                     "upload attempt {attempt}/4 failed for {}: {last}",
                     path.display()
                 ));
-                // Optional curl fallback (CREATE_NO_WINDOW). Skip when the server
-                // resets mid-body — usually DefaultBodyLimit; curl hits the same wall.
-                if attempt == 2
-                    && looks_like_transport_error(&last)
-                    && !last.to_ascii_lowercase().contains("10054")
-                {
-                    if let Err(curl_err) = post_file_via_curl(config, base, token, path) {
-                        always_log(&format!("curl fallback failed: {curl_err}"));
-                    } else {
-                        always_log(&format!("curl fallback ok for {}", path.display()));
-                        return Ok(());
-                    }
-                }
                 std::thread::sleep(std::time::Duration::from_millis(500 * attempt as u64));
             }
         }
     }
     Err(last)
-}
-
-fn looks_like_transport_error(err: &str) -> bool {
-    let e = err.to_ascii_lowercase();
-    !(e.contains("http 401")
-        || e.contains("http 403")
-        || e.contains("http 400")
-        || e.contains("bad token")
-        || e.contains("unauthorized"))
-        && (e.contains("timed out")
-            || e.contains("timeout")
-            || e.contains("connection")
-            || e.contains("refused")
-            || e.contains("reset")
-            || e.contains("unreachable")
-            || e.contains("i/o")
-            || e.contains("os error")
-            || e.contains("dns")
-            || e.contains("failed to connect")
-            || e.contains("transport"))
 }
 
 fn post_file_once(config: &AppConfig, base: &str, token: &str, path: &Path) -> Result<(), String> {
@@ -645,68 +612,6 @@ fn post_file_once(config: &AppConfig, base: &str, token: &str, path: &Path) -> R
             Err(format!("HTTP {code}: {safe}"))
         }
         Err(e) => Err(e.to_string()),
-    }
-}
-
-/// Fallback using system curl.exe (often allowed when the agent binary is blocked).
-fn post_file_via_curl(
-    config: &AppConfig,
-    base: &str,
-    token: &str,
-    path: &Path,
-) -> Result<(), String> {
-    let endpoint = format!("{base}/api/upload");
-    let pc = config.effective_pc_id();
-    let recorded = file_mtime_rfc3339(path).unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
-    let idem = idempotency_key(&pc, path);
-    let file_arg = format!("file=@{};type=video/mp4", path.to_string_lossy());
-    let mut cmd = std::process::Command::new("curl.exe");
-    cmd.args([
-        "-sS",
-        "-f",
-        "-X",
-        "POST",
-        "--connect-timeout",
-        "15",
-        "--max-time",
-        "900",
-        "-H",
-        &format!("Authorization: Bearer {token}"),
-        "-H",
-        &format!("X-PC-ID: {pc}"),
-        "-H",
-        &format!("X-Display-Name: {pc}"),
-        "-H",
-        &format!("X-Recorded-At: {recorded}"),
-        "-H",
-        &format!("X-Idempotency-Key: {idem}"),
-        "-F",
-        &file_arg,
-        &endpoint,
-    ])
-    .stdin(std::process::Stdio::null())
-    .stdout(std::process::Stdio::piped())
-    .stderr(std::process::Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    let output = cmd
-        .output()
-        .map_err(|e| format!("curl.exe not available: {e}"))?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        Err(format!(
-            "curl exit {:?}: {} {}",
-            output.status.code(),
-            stderr.chars().take(120).collect::<String>(),
-            stdout.chars().take(80).collect::<String>()
-        ))
     }
 }
 
